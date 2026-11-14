@@ -1,0 +1,22 @@
+{
+  "name": "iris-assistant",
+  "version": "1.0.0",
+  "description": "I.R.I.S. — Intelligent Realtime Interactive System (<200ms Top-Bar Desktop Assistant)",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node ./node_modules/electron/cli.js .",
+    "dev": "node ./node_modules/electron/cli.js . --dev"
+  },
+  "keywords": [
+    "iris",
+    "jarvis",
+    "voice-assistant",
+    "electron",
+    "low-latency"
+  ],
+  "author": "SL kewy",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^34.5.8"
+  }
+}

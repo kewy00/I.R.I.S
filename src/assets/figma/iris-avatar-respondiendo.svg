@@ -1,0 +1,7 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Iris / Avatar">
+<circle id="Face" cx="32" cy="32" r="32" fill="#F4F3F0"/>
+<path id="Eye" d="M17 29C17 25.6863 19.6863 23 23 23V23C26.3137 23 29 25.6863 29 29V35C29 38.3137 26.3137 41 23 41V41C19.6863 41 17 38.3137 17 35V29Z" fill="#8A8783"/>
+<path id="Eye_2" d="M35 29C35 25.6863 37.6863 23 41 23V23C44.3137 23 47 25.6863 47 29V35C47 38.3137 44.3137 41 41 41V41C37.6863 41 35 38.3137 35 35V29Z" fill="#8A8783"/>
+</g>
+</svg>

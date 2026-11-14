@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Sensitive Configuration & Runtime State (API Keys, OAuth Tokens, Chat & Memory History)
+config/*.json
+config/.*.json
+!config/*.example.json
+
+# Personal Memory Vaults
+memory/*.md
+engine_python/MEMORY.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Environment & OS
+.env
+.env.*
+.DS_Store
+Thumbs.db
+*.log
+
+# Build / Packaging
+dist/
+out/

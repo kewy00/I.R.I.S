@@ -1,0 +1,37 @@
+/**
+ * I.R.I.S. Official Design Tokens
+ * Synced directly from Figma file: USGdtG0u4avlUy2MX82pTf (Page 1)
+ */
+:root {
+  /* Core Figma Variables */
+  --iris-bar-bg: #1e1d1d;
+  --iris-avatar-bg: #f4f3f0;
+  --iris-eye: #8a8783;
+  --iris-message-bg: #ffffff;
+  --iris-reply-bg: #ff4776;
+  --iris-text-dark: #1e1d1d;
+  --iris-text-light: #ffffff;
+
+  /* Core Figma Radii */
+  --iris-radius-bar: 24px;
+  --iris-radius-bubble: 16px;
+  --iris-radius-full: 999px;
+
+  /* Extended Matte Surfaces (No iOS Glass — Solid Apple Matte Style) */
+  --iris-surface-elevated: #272626;
+  --iris-surface-hover: #323030;
+  --iris-surface-inner: #161515;
+  --iris-border-subtle: #2e2d2d;
+  --iris-text-muted: #9e9b97;
+  --iris-accent-pink: #ff4776;
+  --iris-accent-pink-hover: #ff5c86;
+  --iris-accent-green: #32d74b;
+  --iris-accent-amber: #ff9f0a;
+
+  /* Typography */
+  --iris-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* Spring Physics Curves */
+  --iris-spring-fast: cubic-bezier(0.22, 1, 0.36, 1);
+  --iris-spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+}

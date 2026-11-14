@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>I.R.I.S. — Asistente en Tiempo Real (&lt; 0.2s)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./src/styles/iris.css" />
+</head>
+<body>
+
+  <!-- ========================================================================
+       LIVE INTERACTIVE WINDOWS TOP-BAR HUD
+       ======================================================================== -->
+  <header class="iris-top-dock">
+    <div class="iris-bar mode-compact" id="iris-main-bar" data-node-id="8:2">
+      <!-- Iris / Avatar (64x64 at left:14px, top:14px — Click to talk / wake) -->
+      <div class="iris-avatar-slot" id="iris-main-avatar-slot" title="Haz clic en Iris para hablar (o pulsa Ctrl+Espacio)"></div>
+
+      <!-- Compact Idle Layer (Shown when folded at top of Windows) -->
+      <div class="iris-compact-content" id="iris-compact-content" title="Haz clic en el texto para abrir el chat, escribir o configurar">
+        <div class="iris-compact-info">
+          <span class="iris-compact-title" id="iris-compact-title">Iris</span>
+          <span class="iris-compact-sub" id="iris-compact-status">Ctrl + Espacio</span>
+        </div>
+      </div>
+
+      <!-- Conversation Layer (Dynamic Message Stream) -->
+      <div class="iris-conversation-layer">
+        <div class="iris-chat-stream" id="iris-chat-stream"></div>
+
+        <!-- Floating button shown only when scrolled up in conversation history -->
+        <button type="button" class="iris-scroll-bottom-btn is-hidden" id="btn-scroll-bottom" title="Volver al mensaje actual">
+          <span>Actual</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Subtle Hover Controls in bottom-left corner of Iris Bar (under Avatar) -->
+      <div class="iris-top-right-controls">
+        <button class="iris-icon-btn" id="btn-toggle-input" title="Escribir mensaje">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>
+          </svg>
+        </button>
+        <button class="iris-icon-btn" id="btn-toggle-settings" title="Configuración">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+        <button class="iris-icon-btn" id="btn-toggle-compact" title="Plegar barra superior">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <polyline points="18 15 12 9 6 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Interactive Artifact Card (Vision, Media Player, Song/Action Lists, Code, API Integrations) -->
+    <section class="iris-artifact-card is-hidden" id="iris-artifact-card"></section>
+
+    <!-- Clean Text Input Drawer (Toggled via keyboard icon) -->
+    <div class="iris-input-drawer is-hidden" id="iris-input-drawer">
+      <input
+        type="text"
+        class="iris-text-input"
+        id="iris-text-input"
+        placeholder="Escribe un mensaje para Iris..."
+      />
+      <button class="iris-send-btn" id="iris-send-btn" type="button">Enviar</button>
+    </div>
+
+    <!-- Settings Panel (Toggled via gear icon) -->
+    <section class="iris-settings-panel is-hidden" id="iris-settings-panel">
+      <!-- 0. Modo No Molestar (Mini & Esquivar Ratón) -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <div class="iris-setting-title-col">
+            <span class="iris-setting-label">Modo No Molestar</span>
+            <span class="iris-setting-hint">Se aparta en 3 posiciones (izquierda, centro, derecha) al acercar el ratón</span>
+          </div>
+          <label class="iris-toggle-switch" title="Activar o desactivar Modo No Molestar">
+            <input type="checkbox" id="iris-dnd-toggle" />
+            <span class="iris-toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 0b. Iniciar automáticamente al encender el PC -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <div class="iris-setting-title-col">
+            <span class="iris-setting-label">Iniciar al encender el PC</span>
+            <span class="iris-setting-hint">Abre I.R.I.S. automáticamente al iniciar Windows</span>
+          </div>
+          <label class="iris-toggle-switch" title="Iniciar automáticamente con Windows">
+            <input type="checkbox" id="iris-autostart-toggle" checked />
+            <span class="iris-toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 1. Accent Color -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <span class="iris-setting-label">Color principal</span>
+        </div>
+        <div class="iris-color-row">
+          <button type="button" class="iris-color-swatch" data-color="#ff4776" style="background: #ff4776;" title="Rosa Iris"></button>
+          <button type="button" class="iris-color-swatch" data-color="#0a84ff" style="background: #0a84ff;" title="Azul"></button>
+          <button type="button" class="iris-color-swatch" data-color="#8e5af7" style="background: #8e5af7;" title="Violeta"></button>
+          <button type="button" class="iris-color-swatch" data-color="#30d158" style="background: #30d158;" title="Verde"></button>
+          <button type="button" class="iris-color-swatch" data-color="#ff9f0a" style="background: #ff9f0a;" title="Naranja"></button>
+          <button type="button" class="iris-color-swatch" data-color="#ff453a" style="background: #ff453a;" title="Rojo"></button>
+          <label class="iris-color-custom" title="Elegir cualquier color">
+            <input type="color" id="iris-custom-color" value="#ff4776" />
+            <span>Personalizado</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 2. Local Model Selector (Ollama) -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <span class="iris-setting-label">Modelo local (Ollama)</span>
+        </div>
+        <select class="iris-select" id="iris-model-select"></select>
+      </div>
+
+      <!-- 3. Gemini API Keys Manager (Masked with Show/Hide toggle) -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <span class="iris-setting-label">API Keys de Gemini (Rotación)</span>
+          <button type="button" class="iris-small-btn" id="btn-toggle-api-visibility">Ver API</button>
+        </div>
+        <div class="iris-api-keys-list" id="iris-api-keys-list"></div>
+        <div class="iris-api-add-row">
+          <input
+            type="password"
+            class="iris-text-input"
+            id="iris-new-api-input"
+            placeholder="Añadir o cambiar API Key..."
+          />
+          <button type="button" class="iris-send-btn" id="btn-add-api-key">Guardar</button>
+        </div>
+      </div>
+
+      <!-- 4. Conexiones e Integraciones Hub (GitHub, Spotify, Notion, Discord, Supabase, Google) -->
+      <div class="iris-setting-group">
+        <div class="iris-setting-header">
+          <span class="iris-setting-label">Conexiones</span>
+          <span class="iris-integrations-count" id="iris-integrations-count">0 activas</span>
+        </div>
+        <div class="iris-integrations-list" id="iris-integrations-list"></div>
+      </div>
+    </section>
+  </header>
+
+  <!-- ========================================================================
+       CUSTOM RIGHT-CLICK CONTEXT MENU (Copiar, Pegar, Cortar, Seleccionar todo)
+       ======================================================================== -->
+  <div class="iris-context-menu is-hidden" id="iris-context-menu">
+    <button type="button" class="iris-ctx-item" data-ctx-action="copy">
+      <span>Copiar</span>
+      <span class="iris-ctx-shortcut">Ctrl+C</span>
+    </button>
+    <button type="button" class="iris-ctx-item" data-ctx-action="paste">
+      <span>Pegar</span>
+      <span class="iris-ctx-shortcut">Ctrl+V</span>
+    </button>
+    <button type="button" class="iris-ctx-item" data-ctx-action="cut">
+      <span>Cortar</span>
+      <span class="iris-ctx-shortcut">Ctrl+X</span>
+    </button>
+    <div class="iris-ctx-divider"></div>
+    <button type="button" class="iris-ctx-item" data-ctx-action="select-all">
+      <span>Seleccionar todo</span>
+      <span class="iris-ctx-shortcut">Ctrl+A</span>
+    </button>
+  </div>
+
+  <!-- ========================================================================
+       ORGANIZED FIGMA DESIGN SYSTEM & FOLDERS VIEW
+       ======================================================================== -->
+  <main class="iris-design-system">
+    <div class="ds-header">
+      <div class="ds-title-group">
+        <h1>I.R.I.S. — Sistema de Diseño &amp; Componentes</h1>
+        <p>Blanco (Izquierda): Iris (IA) · Color Principal (Derecha): Usuario · Flujo dinámico de mensajes</p>
+      </div>
+      <div class="ds-folder-tabs">
+        <button class="ds-tab active" data-ds-folder="all">Todo el Proyecto</button>
+        <button class="ds-tab" data-ds-folder="01-avatar">01 / Iris Avatar (8 Expresiones)</button>
+        <button class="ds-tab" data-ds-folder="02-bars">02 / Iris Bar (Variantes)</button>
+      </div>
+    </div>
+
+    <section class="ds-section" data-ds-section="01-avatar">
+      <div class="ds-section-header">
+        <div class="ds-section-title">
+          <span>01 / Iris / Avatar — Expresiones de Ojos</span>
+          <span class="ds-badge">Node 7:18 + 4 Nuevas Expresiones</span>
+        </div>
+        <span class="ds-badge">Haz clic en cualquier expresión para probarla en vivo</span>
+      </div>
+      <div class="ds-avatar-grid" id="ds-avatar-grid"></div>
+    </section>
+
+    <section class="ds-section" data-ds-section="02-bars">
+      <div class="ds-section-header">
+        <div class="ds-section-title">
+          <span>02 / Iris / Bar — Variantes de Estado</span>
+          <span class="ds-badge">500×100px · Blanco = IA · Color = Usuario</span>
+        </div>
+      </div>
+
+      <div class="ds-bars-grid">
+        <div class="ds-bar-preview-wrap">
+          <div class="ds-bar-caption">
+            <span>State=Escuchando / Conversación</span>
+            <span>500 × 100 px</span>
+          </div>
+          <div class="iris-bar">
+            <div class="iris-avatar-slot is-listening">
+              <img alt="Escuchando" class="iris-avatar-img" width="64" height="64" src="./src/assets/figma/iris-avatar-escuchando.svg" />
+            </div>
+            <div class="iris-chat-stream">
+              <div class="iris-msg-row from-user">
+                <div class="iris-msg-bubble">Iris, abre la calculadora</div>
+              </div>
+              <div class="iris-msg-row from-ai">
+                <div class="iris-msg-bubble">Calculadora abierta</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { initIrisApp } from './src/components/iris-bar.js';
+    window.addEventListener('DOMContentLoaded', initIrisApp);
+  </script>
+</body>
+</html>
