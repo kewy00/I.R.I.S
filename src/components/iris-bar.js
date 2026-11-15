@@ -14,6 +14,23 @@ export async function initIrisApp() {
   const chatStreamEl = document.getElementById('iris-chat-stream');
   const compactTitleEl = document.getElementById('iris-compact-title');
   const compactStatusEl = document.getElementById('iris-compact-status');
+  const compactTitleMaskEl = document.getElementById('iris-compact-title-mask');
+  const compactStatusMaskEl = document.getElementById('iris-compact-status-mask');
+  const btnCompactPlayPause = document.getElementById('btn-compact-play-pause');
+  const btnCompactNext = document.getElementById('btn-compact-next');
+  const compactProgressFillEl = document.getElementById('iris-compact-progress-fill');
+
+  // Expanded Spotify HUD
+  const spotifyHudTitleEl = document.getElementById('spotify-hud-title');
+  const spotifyHudTitleMaskEl = document.getElementById('spotify-hud-title-mask');
+  const spotifyHudArtistEl = document.getElementById('spotify-hud-artist');
+  const spotifyHudArtistMaskEl = document.getElementById('spotify-hud-artist-mask');
+  const spotifyCurrentTimeEl = document.getElementById('spotify-hud-current-time');
+  const spotifySeekSliderEl = document.getElementById('spotify-hud-seek-slider');
+  const btnSpotifyHudPrev = document.getElementById('btn-spotify-hud-prev');
+  const btnSpotifyHudPlayPause = document.getElementById('btn-spotify-hud-play-pause');
+  const btnSpotifyHudNext = document.getElementById('btn-spotify-hud-next');
+  const spotifyVolSliderEl = document.getElementById('spotify-hud-vol-slider');
 
   const inputDrawerEl = document.getElementById('iris-input-drawer');
   const textInputEl = document.getElementById('iris-text-input');
@@ -150,6 +167,11 @@ export async function initIrisApp() {
   function unfoldIris() {
     if (barEl.classList.contains('mode-compact')) {
       barEl.classList.remove('mode-compact');
+      if (activeHudTab === 'music') {
+        if (spotifyHudTitleEl) spotifyHudTitleEl.dataset.marqueeKey = '';
+        if (spotifyHudArtistEl) spotifyHudArtistEl.dataset.marqueeKey = '';
+        syncAvatarAndCompactUI(engine.state);
+      }
       syncWindowSize();
       scrollToCurrentMessage(false);
     } else {
@@ -946,7 +968,10 @@ export async function initIrisApp() {
           });
           if (res?.reply) {
             resolveAiReply(res.reply);
+            engine.lastTurnResult = res;
             engine.speakFast(res.reply, 'Disponible');
+          } else if (res?.isSpotifyAction && activeHudTab !== 'music') {
+            setHudTab('music', 'right');
           }
           if (res?.artifact) {
             renderArtifact(res.artifact);
@@ -991,39 +1016,194 @@ export async function initIrisApp() {
   // ==========================================================================
   // AVATAR, ENGINE & DRAWER TOGGLES
   // ==========================================================================
+  const ICON_PAUSE_SVG =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>';
+  const ICON_PLAY_SVG =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>';
+  const ICON_PAUSE_LG_SVG =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>';
+  const ICON_PLAY_LG_SVG =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>';
+
+  let activeHudTab = 'ai';
+  let isSeekingTimeline = false;
+  let suppressNextBarClick = false;
+  let duckedSpotifyVolume = null;
+  let wasMusicPlayingAtTurnStart = false;
   let spotifyNowPlayingState = {
     isPlaying: false,
+    trackId: '',
     trackName: '',
     artistName: '',
-    albumArtUrl: ''
+    albumArtUrl: '',
+    uri: '',
+    progressMs: 0,
+    durationMs: 0,
+    volumePercent: 50,
+    lastSyncPerf: 0
   };
   let lastAvatarRenderKey = 'iris:Disponible';
   avatarSlot.innerHTML = renderIrisAvatarHTML('Disponible', 'live');
   attachIrisEyePhysics(avatarSlot);
   renderMessages(false);
 
+  function formatDurationMs(ms) {
+    const totalSec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function setSliderProgressVar(sliderEl, pct) {
+    if (!sliderEl) return;
+    const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
+    sliderEl.style.setProperty('--slider-pct', `${clamped.toFixed(1)}%`);
+  }
+
+  function setCompactMarqueeText(el, maskEl, text, allowMarquee) {
+    if (!el || !maskEl) return;
+    const cleanText = String(text || '');
+    const key = `${allowMarquee ? '1' : '0'}:${cleanText}`;
+    if (el.dataset.marqueeKey === key) return;
+
+    el.dataset.marqueeKey = key;
+    el.classList.remove('is-marquee');
+    el.style.animationDuration = '';
+    maskEl.classList.remove('has-overflow');
+    el.textContent = cleanText;
+
+    if (!allowMarquee || !cleanText) return;
+
+    requestAnimationFrame(() => {
+      if (el.dataset.marqueeKey !== key) return;
+      if (el.scrollWidth > maskEl.clientWidth + 2) {
+        const safe = escapeHtml(cleanText);
+        el.innerHTML = `<span>${safe}</span><span class="iris-marquee-spacer">•</span><span>${safe}</span><span class="iris-marquee-spacer">•</span>`;
+        const dur = Math.max(6.5, Math.min(18, cleanText.length * 0.34));
+        el.style.animationDuration = `${dur}s`;
+        el.classList.add('is-marquee');
+        maskEl.classList.add('has-overflow');
+      }
+    });
+  }
+
+  function updateSpotifyProgressBar() {
+    const durationMs = spotifyNowPlayingState.durationMs;
+    const elapsed = spotifyNowPlayingState.isPlaying
+      ? Math.max(0, performance.now() - (spotifyNowPlayingState.lastSyncPerf || performance.now()))
+      : 0;
+    const currentMs = durationMs > 0 ? Math.min(durationMs, spotifyNowPlayingState.progressMs + elapsed) : 0;
+    const pct = durationMs > 0 ? Math.max(0, Math.min(100, (currentMs / durationMs) * 100)) : 0;
+
+    if (compactProgressFillEl) {
+      compactProgressFillEl.style.width = activeHudTab === 'music' ? `${pct.toFixed(2)}%` : '0%';
+    }
+    if (!isSeekingTimeline) {
+      if (spotifySeekSliderEl) {
+        spotifySeekSliderEl.value = String(Math.round((pct / 100) * 1000));
+        setSliderProgressVar(spotifySeekSliderEl, pct);
+      }
+      if (spotifyCurrentTimeEl) {
+        spotifyCurrentTimeEl.textContent = formatDurationMs(currentMs);
+      }
+    }
+  }
+
+  function syncPlayPauseButtonIcons(isPlaying) {
+    if (btnCompactPlayPause) {
+      btnCompactPlayPause.innerHTML = isPlaying ? ICON_PAUSE_SVG : ICON_PLAY_SVG;
+      btnCompactPlayPause.title = isPlaying ? 'Pausar Spotify' : 'Reproducir última canción en Spotify';
+    }
+    if (btnSpotifyHudPlayPause) {
+      btnSpotifyHudPlayPause.innerHTML = isPlaying ? ICON_PAUSE_LG_SVG : ICON_PLAY_LG_SVG;
+      btnSpotifyHudPlayPause.title = isPlaying ? 'Pausar' : 'Reproducir';
+    }
+  }
+
+  const HUD_WIDGETS = ['ai', 'music'];
+  let widgetAnimTimer = null;
+
+  function setHudTab(tabName, direction = null) {
+    const nextTab = HUD_WIDGETS.includes(tabName) ? tabName : 'ai';
+    const changed = nextTab !== activeHudTab;
+    activeHudTab = nextTab;
+    barEl.classList.toggle('is-music-tab', activeHudTab === 'music');
+
+    if (changed && (direction === 'right' || direction === 'left') && barEl) {
+      if (widgetAnimTimer) {
+        clearTimeout(widgetAnimTimer);
+        widgetAnimTimer = null;
+      }
+      barEl.classList.remove('widget-anim-right', 'widget-anim-left');
+      void barEl.offsetWidth;
+      barEl.classList.add(direction === 'right' ? 'widget-anim-right' : 'widget-anim-left');
+      widgetAnimTimer = setTimeout(() => {
+        barEl.classList.remove('widget-anim-right', 'widget-anim-left');
+        widgetAnimTimer = null;
+      }, 280);
+    }
+
+    if (activeHudTab === 'music') {
+      pollSpotifyNowPlaying();
+    }
+    syncAvatarAndCompactUI(engine.state);
+    syncWindowSize();
+    resetInactivityTimer();
+  }
+
+  function cycleHudWidget(direction) {
+    const currentIdx = HUD_WIDGETS.indexOf(activeHudTab);
+    const step = direction === 'right' ? 1 : -1;
+    const nextIdx = (currentIdx + step + HUD_WIDGETS.length) % HUD_WIDGETS.length;
+    setHudTab(HUD_WIDGETS[nextIdx], direction);
+  }
+
   function syncAvatarAndCompactUI(currentState = engine.state) {
     const isTalkingOrActive = Boolean(engine.isListening) || currentState !== 'Disponible';
-    const showSpotifyDisc =
-      !isTalkingOrActive &&
-      Boolean(spotifyNowPlayingState.isPlaying && (spotifyNowPlayingState.trackName || spotifyNowPlayingState.albumArtUrl));
+    const showMusicAvatar = activeHudTab === 'music' && !isTalkingOrActive;
 
-    if (showSpotifyDisc) {
-      const renderKey = `spotify:${spotifyNowPlayingState.albumArtUrl}:${spotifyNowPlayingState.trackName}`;
+    syncPlayPauseButtonIcons(spotifyNowPlayingState.isPlaying);
+
+    if (activeHudTab === 'music') {
+      setCompactMarqueeText(spotifyHudTitleEl, spotifyHudTitleMaskEl, spotifyNowPlayingState.trackName || 'Spotify', true);
+      setCompactMarqueeText(
+        spotifyHudArtistEl,
+        spotifyHudArtistMaskEl,
+        spotifyNowPlayingState.artistName || 'Pulsa Play para reproducir',
+        true
+      );
+      if (spotifyVolSliderEl && spotifyVolSliderEl.dataset.dragging !== '1') {
+        const vol = Math.max(0, Math.min(100, Math.round(Number(spotifyNowPlayingState.volumePercent) ?? 50)));
+        spotifyVolSliderEl.value = String(vol);
+        setSliderProgressVar(spotifyVolSliderEl, vol);
+      }
+    }
+
+    if (showMusicAvatar) {
+      const renderKey = `spotify:${spotifyNowPlayingState.albumArtUrl}:${spotifyNowPlayingState.trackName}:${spotifyNowPlayingState.isPlaying ? '1' : '0'}`;
       if (lastAvatarRenderKey !== renderKey) {
         avatarSlot.innerHTML = renderSpotifyDiscHTML(
           spotifyNowPlayingState.albumArtUrl,
-          spotifyNowPlayingState.trackName,
-          'live'
+          spotifyNowPlayingState.trackName || 'Spotify',
+          'live',
+          spotifyNowPlayingState.isPlaying
         );
         lastAvatarRenderKey = renderKey;
       }
       avatarSlot.classList.remove('is-listening');
-      avatarSlot.title = `${spotifyNowPlayingState.trackName} — ${spotifyNowPlayingState.artistName} (Haz clic para hablar con Iris)`;
+      avatarSlot.title = spotifyNowPlayingState.trackName
+        ? `${spotifyNowPlayingState.trackName} — ${spotifyNowPlayingState.artistName} (Haz clic para abrir en Spotify)`
+        : 'Haz clic para abrir la canción en Spotify';
       const hadSpotifyClass = barEl.classList.contains('has-spotify-now-playing');
       barEl.classList.add('has-spotify-now-playing');
-      if (compactTitleEl) compactTitleEl.textContent = spotifyNowPlayingState.trackName || 'Spotify';
-      if (compactStatusEl) compactStatusEl.textContent = spotifyNowPlayingState.artistName || 'Sonando en Spotify';
+      setCompactMarqueeText(compactTitleEl, compactTitleMaskEl, spotifyNowPlayingState.trackName || 'Spotify', true);
+      setCompactMarqueeText(
+        compactStatusEl,
+        compactStatusMaskEl,
+        spotifyNowPlayingState.artistName || 'Pulsa Play para reproducir',
+        true
+      );
+      updateSpotifyProgressBar();
       if (!hadSpotifyClass && barEl.classList.contains('mode-compact')) {
         syncWindowSize();
       }
@@ -1036,19 +1216,19 @@ export async function initIrisApp() {
       avatarSlot.classList.toggle('is-listening', currentState === 'Escuchando');
       avatarSlot.title = 'Haz clic en Iris para hablar (o pulsa Ctrl+Espacio)';
       const hadSpotifyClass = barEl.classList.contains('has-spotify-now-playing');
-      barEl.classList.remove('has-spotify-now-playing');
-      if (compactTitleEl) compactTitleEl.textContent = 'Iris';
-      if (compactStatusEl) {
-        compactStatusEl.textContent =
-          currentState === 'Escuchando'
-            ? 'Escuchando...'
-            : currentState === 'Pensando'
-              ? 'Pensando...'
-              : currentState === 'Respondiendo'
-                ? 'Hablando...'
-                : 'Ctrl + Espacio';
-      }
-      if (hadSpotifyClass && barEl.classList.contains('mode-compact')) {
+      barEl.classList.toggle('has-spotify-now-playing', activeHudTab === 'music');
+      const statusText =
+        currentState === 'Escuchando'
+          ? 'Escuchando...'
+          : currentState === 'Pensando'
+            ? 'Pensando...'
+            : currentState === 'Respondiendo'
+              ? 'Hablando...'
+              : 'Ctrl + Espacio';
+      setCompactMarqueeText(compactTitleEl, compactTitleMaskEl, activeHudTab === 'music' ? (spotifyNowPlayingState.trackName || 'Spotify') : 'Iris', false);
+      setCompactMarqueeText(compactStatusEl, compactStatusMaskEl, statusText, false);
+      updateSpotifyProgressBar();
+      if (hadSpotifyClass && activeHudTab !== 'music' && barEl.classList.contains('mode-compact')) {
         syncWindowSize();
       }
     }
@@ -1060,19 +1240,36 @@ export async function initIrisApp() {
     isPollingSpotify = true;
     try {
       const res = await window.irisOS.spotifyNowPlaying();
-      if (res && res.ok && res.isPlaying) {
+      if (res && res.ok) {
         spotifyNowPlayingState = {
-          isPlaying: true,
-          trackName: res.trackName || '',
-          artistName: res.artistName || '',
-          albumArtUrl: res.albumArtUrl || ''
+          isPlaying: Boolean(res.isPlaying),
+          trackId: res.trackId || '',
+          trackName: res.trackName || 'Spotify',
+          artistName: res.artistName || 'Pulsa Play para reproducir',
+          albumArtUrl: res.albumArtUrl || '',
+          uri: res.uri || '',
+          progressMs: Number(res.progressMs) || 0,
+          durationMs: Number(res.durationMs) || 0,
+          volumePercent:
+            duckedSpotifyVolume !== null
+              ? 50
+              : res.volumePercent !== null && res.volumePercent !== undefined
+                ? Number(res.volumePercent)
+                : spotifyNowPlayingState.volumePercent,
+          lastSyncPerf: performance.now()
         };
       } else {
         spotifyNowPlayingState = {
           isPlaying: false,
-          trackName: '',
-          artistName: '',
-          albumArtUrl: ''
+          trackId: '',
+          trackName: 'Spotify no conectado',
+          artistName: 'Conéctalo en Ajustes > Conexiones',
+          albumArtUrl: '',
+          uri: '',
+          progressMs: 0,
+          durationMs: 0,
+          volumePercent: duckedSpotifyVolume !== null ? 50 : (spotifyNowPlayingState.volumePercent ?? 50),
+          lastSyncPerf: performance.now()
         };
       }
       syncAvatarAndCompactUI(engine.state);
@@ -1083,12 +1280,53 @@ export async function initIrisApp() {
     }
   }
 
+  async function duckSpotifyVolumeForSpeech() {
+    wasMusicPlayingAtTurnStart = wasMusicPlayingAtTurnStart || Boolean(spotifyNowPlayingState.isPlaying);
+    const currentVol = Number(spotifyNowPlayingState.volumePercent);
+    if (
+      spotifyNowPlayingState.isPlaying &&
+      Number.isFinite(currentVol) &&
+      currentVol > 75 &&
+      duckedSpotifyVolume === null
+    ) {
+      duckedSpotifyVolume = Math.round(currentVol);
+      spotifyNowPlayingState.volumePercent = 50;
+      syncAvatarAndCompactUI(engine.state);
+      try {
+        await window.irisOS?.spotifyControl?.('set_volume', 50);
+      } catch {
+        // ignore transient Spotify errors
+      }
+    }
+  }
+
+  async function restoreDuckedSpotifyVolume(turnMeta = null) {
+    if (duckedSpotifyVolume === null) return;
+    const restoreVol = duckedSpotifyVolume;
+    duckedSpotifyVolume = null;
+
+    if (turnMeta?.isSpotifyVolumeChange) {
+      return;
+    }
+
+    spotifyNowPlayingState.volumePercent = restoreVol;
+    syncAvatarAndCompactUI(engine.state);
+    try {
+      await window.irisOS?.spotifyControl?.('set_volume', restoreVol);
+    } catch {
+      // ignore transient Spotify errors
+    }
+  }
+
   const engine = new IrisReflexEngine({
     onStateChange: (newState) => {
       if (newState === 'Escuchando' || newState === 'Pensando' || newState === 'Respondiendo') {
         clearInactivityTimer();
       } else if (newState === 'Disponible') {
         resetInactivityTimer();
+      }
+      if (newState === 'Escuchando') {
+        duckSpotifyVolumeForSpeech();
       }
       syncAvatarAndCompactUI(newState);
 
@@ -1111,22 +1349,161 @@ export async function initIrisApp() {
     onArtifact: (artifact) => {
       renderArtifact(artifact);
     },
-    onTurnFinished: () => {
+    onTurnFinished: async (turnResult) => {
       resetInactivityTimer();
-      setTimeout(pollSpotifyNowPlaying, 650);
+      await restoreDuckedSpotifyVolume(turnResult);
+      await pollSpotifyNowPlaying();
+      setTimeout(pollSpotifyNowPlaying, 800);
+
+      const isSpotifyTurn = Boolean(turnResult?.isSpotifyAction);
+      const isMusicActiveNow =
+        Boolean(spotifyNowPlayingState.isPlaying) ||
+        (wasMusicPlayingAtTurnStart && !turnResult?.isSpotifyPause);
+      wasMusicPlayingAtTurnStart = false;
+
+      if ((isSpotifyTurn || isMusicActiveNow) && activeHudTab !== 'music') {
+        setHudTab('music', 'right');
+      }
     }
   });
 
   pollSpotifyNowPlaying();
   setInterval(pollSpotifyNowPlaying, 3000);
+  setInterval(updateSpotifyProgressBar, 250);
+
+  document.getElementById('iris-compact-media-controls')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  document.getElementById('iris-spotify-hud-layer')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetInactivityTimer();
+  });
+
+  let tabDragState = null;
+  barEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (
+      e.target.closest(
+        'input, select, textarea, a, .iris-avatar-slot, .iris-spotify-hud-timeline, .iris-spotify-transport-group, .iris-icon-btn, .iris-compact-media-btn, .iris-spotify-ctrl-btn'
+      )
+    ) {
+      return;
+    }
+    tabDragState = { x: e.clientX, y: e.clientY, handled: false };
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    if (!tabDragState || tabDragState.handled) return;
+    const dx = e.clientX - tabDragState.x;
+    const dy = e.clientY - tabDragState.y;
+    if (Math.abs(dx) >= 34 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      tabDragState.handled = true;
+      suppressNextBarClick = true;
+      cycleHudWidget(dx > 0 ? 'right' : 'left');
+    }
+  });
+
+  const endTabDrag = () => {
+    tabDragState = null;
+  };
+  window.addEventListener('pointerup', endTabDrag);
+  window.addEventListener('pointercancel', endTabDrag);
+
+  async function handleSpotifyPlayPauseClick(e) {
+    e.stopPropagation();
+    resetInactivityTimer();
+    const nextPlaying = !spotifyNowPlayingState.isPlaying;
+    spotifyNowPlayingState.isPlaying = nextPlaying;
+    spotifyNowPlayingState.lastSyncPerf = performance.now();
+    syncAvatarAndCompactUI(engine.state);
+    await window.irisOS?.spotifyControl?.('play_pause');
+    setTimeout(pollSpotifyNowPlaying, 450);
+    setTimeout(pollSpotifyNowPlaying, 1200);
+  }
+
+  async function handleSpotifySkipClick(direction, e) {
+    e.stopPropagation();
+    resetInactivityTimer();
+    spotifyNowPlayingState.progressMs = 0;
+    spotifyNowPlayingState.lastSyncPerf = performance.now();
+    updateSpotifyProgressBar();
+    await window.irisOS?.spotifyControl?.(direction);
+    setTimeout(pollSpotifyNowPlaying, 450);
+    setTimeout(pollSpotifyNowPlaying, 1200);
+  }
+
+  btnCompactPlayPause?.addEventListener('click', handleSpotifyPlayPauseClick);
+  btnSpotifyHudPlayPause?.addEventListener('click', handleSpotifyPlayPauseClick);
+  btnCompactNext?.addEventListener('click', (e) => handleSpotifySkipClick('next', e));
+  btnSpotifyHudNext?.addEventListener('click', (e) => handleSpotifySkipClick('next', e));
+  btnSpotifyHudPrev?.addEventListener('click', (e) => handleSpotifySkipClick('previous', e));
+
+  spotifySeekSliderEl?.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    isSeekingTimeline = true;
+    clearInactivityTimer();
+  });
+
+  spotifySeekSliderEl?.addEventListener('input', (e) => {
+    e.stopPropagation();
+    isSeekingTimeline = true;
+    const ratio = Math.max(0, Math.min(1, Number(e.target.value) / 1000));
+    setSliderProgressVar(spotifySeekSliderEl, ratio * 100);
+    if (spotifyCurrentTimeEl) {
+      spotifyCurrentTimeEl.textContent = formatDurationMs(ratio * (spotifyNowPlayingState.durationMs || 0));
+    }
+  });
+
+  spotifySeekSliderEl?.addEventListener('change', async (e) => {
+    e.stopPropagation();
+    const ratio = Math.max(0, Math.min(1, Number(e.target.value) / 1000));
+    const targetMs = Math.round(ratio * (spotifyNowPlayingState.durationMs || 0));
+    spotifyNowPlayingState.progressMs = targetMs;
+    spotifyNowPlayingState.lastSyncPerf = performance.now();
+    isSeekingTimeline = false;
+    updateSpotifyProgressBar();
+    resetInactivityTimer();
+    await window.irisOS?.spotifySeek?.(targetMs);
+    setTimeout(pollSpotifyNowPlaying, 500);
+  });
+
+  spotifyVolSliderEl?.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    spotifyVolSliderEl.dataset.dragging = '1';
+    clearInactivityTimer();
+  });
+
+  spotifyVolSliderEl?.addEventListener('input', (e) => {
+    e.stopPropagation();
+    setSliderProgressVar(spotifyVolSliderEl, e.target.value);
+  });
+
+  spotifyVolSliderEl?.addEventListener('change', async (e) => {
+    e.stopPropagation();
+    spotifyVolSliderEl.dataset.dragging = '0';
+    const vol = Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0)));
+    spotifyNowPlayingState.volumePercent = vol;
+    resetInactivityTimer();
+    await window.irisOS?.spotifyControl?.('set_volume', vol);
+  });
 
   avatarSlot.addEventListener('click', (e) => {
     e.stopPropagation();
     clearInactivityTimer();
+    if (activeHudTab === 'music' && !engine.isListening && engine.state === 'Disponible') {
+      window.irisOS?.spotifyOpenTrack?.(spotifyNowPlayingState.uri || '');
+      resetInactivityTimer();
+      return;
+    }
     engine.toggleListening();
   });
 
   barEl.addEventListener('click', () => {
+    if (suppressNextBarClick) {
+      suppressNextBarClick = false;
+      return;
+    }
     unfoldIris();
   });
 
@@ -1143,6 +1520,9 @@ export async function initIrisApp() {
   btnToggleInput?.addEventListener('click', (e) => {
     e.stopPropagation();
     clearInactivityTimer();
+    if (activeHudTab !== 'ai') {
+      setHudTab('ai');
+    }
     inputDrawerEl.classList.toggle('is-hidden');
     const isOpen = !inputDrawerEl.classList.contains('is-hidden');
     btnToggleInput.classList.toggle('active', isOpen);
@@ -1171,6 +1551,7 @@ export async function initIrisApp() {
     if (!val) return;
     textInputEl.value = '';
     clearInactivityTimer();
+    wasMusicPlayingAtTurnStart = wasMusicPlayingAtTurnStart || Boolean(spotifyNowPlayingState.isPlaying);
     appendOrUpdateUserMessage(val, false);
     engine.processUserTurnAfterPush(val);
   };
@@ -1189,6 +1570,9 @@ export async function initIrisApp() {
   if (window.irisOS?.onShortcutWake) {
     window.irisOS.onShortcutWake(() => {
       clearInactivityTimer();
+      if (activeHudTab !== 'ai') {
+        setHudTab('ai');
+      }
       engine.toggleListening();
     });
   }

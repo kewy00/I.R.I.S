@@ -22,8 +22,12 @@ const SCOPES = [
   'user-read-playback-state',
   'user-modify-playback-state',
   'user-read-currently-playing',
+  'user-read-recently-played',
   'playlist-read-private',
-  'user-library-read'
+  'playlist-modify-public',
+  'playlist-modify-private',
+  'user-library-read',
+  'user-library-modify'
 ].join(' ');
 
 let authServer = null;
@@ -342,35 +346,87 @@ async function playItem(item) {
 let cachedVolumePercent = null;
 let cachedVolumeTimestamp = 0;
 
+function extractTrackInfo(item, progressMs = 0) {
+  const artistName = (item?.artists || []).map((a) => a.name).join(', ');
+  const images = item?.album?.images || [];
+  const preferredImage = images.find((img) => img.width >= 200 && img.width <= 400) || images[0];
+  const trackId = item?.id || '';
+  const uri = item?.uri || (trackId ? `spotify:track:${trackId}` : '');
+  return {
+    trackId,
+    trackName: item?.name || '',
+    artistName,
+    albumName: item?.album?.name || '',
+    albumArtUrl: preferredImage?.url || '',
+    progressMs: Number(progressMs) || 0,
+    durationMs: Number(item?.duration_ms) || 0,
+    uri,
+    externalUrl: item?.external_urls?.spotify || ''
+  };
+}
+
 async function getNowPlaying() {
   if (!isConnected()) {
     return { ok: false, error: 'SPOTIFY_NOT_CONNECTED' };
   }
+  const cfg = loadSpotifyConfig();
   const res = await spotifyRequest('GET', '/me/player');
-  if (!res.ok || !res.data || !res.data.item) {
-    return { ok: false, isPlaying: false, error: 'NOTHING_PLAYING' };
+  if (res.ok && res.data && res.data.item) {
+    const isPlaying = Boolean(res.data.is_playing);
+    const trackInfo = extractTrackInfo(res.data.item, res.data.progress_ms);
+    const vol = res.data.device?.volume_percent;
+    if (typeof vol === 'number' && !Number.isNaN(vol)) {
+      cachedVolumePercent = vol;
+      cachedVolumeTimestamp = Date.now();
+    }
+    const prevUri = cfg.lastTrack?.uri;
+    const prevPausedDiff = !isPlaying && Math.abs((cfg.lastTrack?.progressMs || 0) - trackInfo.progressMs) > 2000;
+    if (prevUri !== trackInfo.uri || prevPausedDiff || !cfg.lastTrack?.trackName) {
+      cfg.lastTrack = trackInfo;
+      saveSpotifyConfig(cfg);
+    }
+    return {
+      ok: true,
+      isPlaying,
+      ...trackInfo,
+      deviceName: res.data.device?.name || 'Spotify',
+      volumePercent: vol ?? cachedVolumePercent ?? 50
+    };
   }
-  const item = res.data.item;
-  const artistName = (item.artists || []).map((a) => a.name).join(', ');
-  const images = item.album?.images || [];
-  const preferredImage = images.find((img) => img.width >= 200 && img.width <= 400) || images[0];
-  const albumArtUrl = preferredImage?.url || '';
-  const vol = res.data.device?.volume_percent;
-  if (typeof vol === 'number' && !Number.isNaN(vol)) {
-    cachedVolumePercent = vol;
-    cachedVolumeTimestamp = Date.now();
+
+  if (!cfg.lastTrack?.trackName) {
+    const recent = await spotifyRequest('GET', '/me/player/recently-played?limit=1');
+    const recentTrack = recent.ok ? recent.data?.items?.[0]?.track : null;
+    if (recentTrack) {
+      cfg.lastTrack = extractTrackInfo(recentTrack, 0);
+      saveSpotifyConfig(cfg);
+    }
   }
+
+  if (cfg.lastTrack?.trackName) {
+    return {
+      ok: true,
+      isPlaying: false,
+      ...cfg.lastTrack,
+      deviceName: 'Spotify (En pausa)',
+      volumePercent: cachedVolumePercent ?? 50
+    };
+  }
+
   return {
     ok: true,
-    isPlaying: Boolean(res.data.is_playing),
-    trackName: item.name || '',
-    artistName,
-    albumName: item.album?.name || '',
-    albumArtUrl,
-    deviceName: res.data.device?.name || 'Spotify',
-    volumePercent: vol ?? null,
-    uri: item.uri || '',
-    externalUrl: item.external_urls?.spotify || ''
+    isPlaying: false,
+    trackId: '',
+    trackName: 'Spotify',
+    artistName: 'Pulsa Play para reproducir',
+    albumName: '',
+    albumArtUrl: '',
+    progressMs: 0,
+    durationMs: 0,
+    deviceName: 'Spotify',
+    volumePercent: cachedVolumePercent ?? 50,
+    uri: '',
+    externalUrl: ''
   };
 }
 
@@ -386,9 +442,28 @@ async function control(subCommand, volumePercent = null) {
 
   if (subCommand === 'play_pause') {
     const state = await spotifyRequest('GET', '/me/player');
-    const isPlaying = Boolean(state.data?.is_playing);
-    const res = await spotifyRequest('PUT', isPlaying ? '/me/player/pause' : '/me/player/play');
-    return res.ok || res.status === 204;
+    if (state.ok && state.data?.is_playing) {
+      const res = await spotifyRequest('PUT', '/me/player/pause');
+      return res.ok || res.status === 204;
+    }
+    if (state.ok && state.data) {
+      const res = await spotifyRequest('PUT', '/me/player/play');
+      if (res.ok || res.status === 204) return true;
+    }
+    const cfg = loadSpotifyConfig();
+    if (cfg.lastTrack?.uri) {
+      const playRes = await playItem({
+        uri: cfg.lastTrack.uri,
+        type: 'track',
+        id: cfg.lastTrack.trackId,
+        name: cfg.lastTrack.trackName
+      });
+      if (playRes.ok) return true;
+      if (playRes.error === 'DESKTOP_ASLEEP' || playRes.error === 'NO_DEVICE') {
+        return { wakeUri: cfg.lastTrack.uri };
+      }
+    }
+    return false;
   }
 
   if (subCommand === 'set_volume' && typeof volumePercent === 'number' && !Number.isNaN(volumePercent)) {
@@ -426,6 +501,55 @@ async function control(subCommand, volumePercent = null) {
   return res.ok || res.status === 204;
 }
 
+async function seek(positionMs) {
+  if (!isConnected()) return { ok: false, error: 'SPOTIFY_NOT_CONNECTED' };
+  const pos = Math.max(0, Math.round(Number(positionMs) || 0));
+  const res = await spotifyRequest('PUT', `/me/player/seek?position_ms=${pos}`);
+  const cfg = loadSpotifyConfig();
+  if (cfg.lastTrack) {
+    cfg.lastTrack.progressMs = pos;
+    saveSpotifyConfig(cfg);
+  }
+  return { ok: res.ok || res.status === 204 };
+}
+
+async function getUserPlaylists() {
+  if (!isConnected()) return { ok: false, playlists: [] };
+  const res = await spotifyRequest('GET', '/me/playlists?limit=25');
+  const items = (res.data?.items || []).map((p) => ({
+    id: p.id,
+    name: p.name || 'Playlist',
+    tracksTotal: p.tracks?.total || 0
+  }));
+  return {
+    ok: true,
+    playlists: [{ id: 'liked', name: '♥ Canciones que te gustan' }, ...items]
+  };
+}
+
+async function addTrackToPlaylist(playlistId, trackUri = '', trackId = '') {
+  if (!isConnected()) return { ok: false, error: 'SPOTIFY_NOT_CONNECTED' };
+  const cfg = loadSpotifyConfig();
+  const uri = trackUri || cfg.lastTrack?.uri || '';
+  const id = trackId || cfg.lastTrack?.trackId || (uri.startsWith('spotify:track:') ? uri.split(':')[2] : '');
+  if (!uri && !id) {
+    return { ok: false, error: 'NO_TRACK' };
+  }
+  if (playlistId === 'liked' && id) {
+    const res = await spotifyRequest('PUT', `/me/tracks?ids=${encodeURIComponent(id)}`);
+    if (res.ok || res.status === 200 || res.status === 204) return { ok: true };
+    if (res.status === 403) return { ok: false, error: 'INSUFFICIENT_SCOPE' };
+    return { ok: false, error: res.data?.error?.message || `HTTP ${res.status}` };
+  }
+  const fullUri = uri || `spotify:track:${id}`;
+  const res = await spotifyRequest('POST', `/playlists/${encodeURIComponent(playlistId)}/tracks`, {
+    uris: [fullUri]
+  });
+  if (res.ok || res.status === 201 || res.status === 200) return { ok: true };
+  if (res.status === 403) return { ok: false, error: 'INSUFFICIENT_SCOPE' };
+  return { ok: false, error: res.data?.error?.message || `HTTP ${res.status}` };
+}
+
 module.exports = {
   REDIRECT_URI,
   connect,
@@ -435,5 +559,8 @@ module.exports = {
   search,
   playItem,
   control,
-  getNowPlaying
+  getNowPlaying,
+  seek,
+  getUserPlaylists,
+  addTrackToPlaylist
 };

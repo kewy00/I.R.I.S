@@ -11,6 +11,12 @@ contextBridge.exposeInMainWorld('irisOS', {
   executeArtifactAction: (payload) => ipcRenderer.invoke('iris:artifact-action', payload),
   spotifyStatus: () => ipcRenderer.invoke('iris:spotify-status'),
   spotifyNowPlaying: () => ipcRenderer.invoke('iris:spotify-now-playing'),
+  spotifyControl: (action, volumePercent) =>
+    ipcRenderer.invoke('iris:spotify-control', volumePercent !== undefined ? { action, volumePercent } : action),
+  spotifySeek: (positionMs) => ipcRenderer.invoke('iris:spotify-seek', positionMs),
+  spotifyPlaylists: () => ipcRenderer.invoke('iris:spotify-playlists'),
+  spotifyAddToPlaylist: (payload) => ipcRenderer.invoke('iris:spotify-add-to-playlist', payload),
+  spotifyOpenTrack: (uri) => ipcRenderer.invoke('iris:spotify-open-track', uri),
   spotifyConnect: (clientId) => ipcRenderer.invoke('iris:spotify-connect', clientId),
   spotifyDisconnect: () => ipcRenderer.invoke('iris:spotify-disconnect'),
   listIntegrations: () => ipcRenderer.invoke('iris:list-integrations'),

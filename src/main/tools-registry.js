@@ -9,8 +9,8 @@ const spotifyApi = require('./spotify-api');
 const { googleApi } = require('./google-api');
 const { memoryManager } = require('./memory-manager');
 const { integrationsManager } = require('./integrations-manager');
-const { playMusicOrVideo, executeMediaControl } = require('./agent-executor');
-const { openWindowsApp, getSystemStatsSummary } = require('./os-tools');
+const { playMusicOrVideo, executeMediaControl, searchAndOpenYouTubeVideo, openWebSearch } = require('./agent-executor');
+const { openWindowsApp, getSystemStatsSummary, controlWindowsWindow } = require('./os-tools');
 
 const TOOL_DEFINITIONS = [
   {
@@ -35,9 +35,46 @@ const TOOL_DEFINITIONS = [
     }
   },
   {
+    name: 'youtube_search_play',
+    description:
+      'Busca y abre o reproduce vídeos, clips, Shorts, directos, trailers, tutoriales o momentos de streamers/creadores en YouTube (ej. clips de Twitch/YouTube, vídeos de Coscu, Pereira, Guanyar, DjMaRiiO, Ibai, Xokas, etc.). Úsala SIEMPRE que el usuario pida buscar, ver o poner un vídeo, clip, momento o canal en YouTube.',
+    directFinal: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Búsqueda del vídeo, clip o momento en YouTube (corrigiendo errores fonéticos evidentes en nombres de creadores si los hay).'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'web_search',
+    description:
+      'Busca en Internet (Google, vídeos de la web, Twitch, TikTok, X/Twitter, Reddit) y abre los resultados en el navegador del usuario.',
+    directFinal: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Términos de búsqueda en Internet o URL completa.'
+        },
+        platform: {
+          type: 'string',
+          enum: ['google', 'videos', 'twitch', 'tiktok'],
+          description: 'Plataforma donde buscar (por defecto "google"; usa "videos" para buscar clips en la web).'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'spotify_control',
     description:
-      'Controla la reproducción de Spotify o del audio del sistema: pausar, reanudar, alternar play/pausa, siguiente canción, anterior, silenciar o cambiar volumen.',
+      'Controla la reproducción de música en Spotify (pausar, reanudar, alternar play/pausa, siguiente canción, anterior) o el volumen específico de Spotify.',
     directFinal: true,
     parameters: {
       type: 'object',
@@ -50,6 +87,33 @@ const TOOL_DEFINITIONS = [
         volumePercent: {
           type: 'integer',
           description: 'Porcentaje de volumen (0 a 100) si action es "set_volume".'
+        },
+        target: {
+          type: 'string',
+          enum: ['system', 'spotify'],
+          description:
+            'Usa "spotify" SOLO si el usuario menciona explícitamente cambiar el volumen de Spotify. Si pide cambiar el volumen del ordenador, del PC o el volumen general, usa "system".'
+        }
+      },
+      required: ['action']
+    }
+  },
+  {
+    name: 'os_volume_control',
+    description:
+      'Controla el volumen general del ordenador / sistema Windows (poner a un porcentaje exacto de 0 a 100%, subir, bajar o silenciar el PC). Úsala siempre que el usuario pida cambiar el volumen del ordenador, del PC, del sistema o el volumen general.',
+    directFinal: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['set_volume', 'vol_up', 'vol_down', 'mute'],
+          description: 'Acción de volumen del sistema a ejecutar.'
+        },
+        volumePercent: {
+          type: 'integer',
+          description: 'Porcentaje de volumen (0 a 100) cuando action es "set_volume".'
         }
       },
       required: ['action']
@@ -212,7 +276,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'os_open_app',
-    description: 'Abre cualquier aplicación instalada en Windows o sitio web conocido (ej. Visual Studio Code, Discord, Calculadora, Chrome, Spotify).',
+    description:
+      'Abre aplicaciones instaladas en Windows o sitios web conocidos (ej. Visual Studio Code, Discord, Calculadora, Chrome, Spotify). Úsala SOLO para abrir o iniciar apps, nunca para cerrarlas, minimizarlas o moverlas.',
     directFinal: true,
     parameters: {
       type: 'object',
@@ -223,6 +288,32 @@ const TOOL_DEFINITIONS = [
         }
       },
       required: ['appName']
+    }
+  },
+  {
+    name: 'os_window_control',
+    description:
+      'Controla las ventanas y aplicaciones abiertas en Windows: cerrar una aplicación o ventana, minimizar, minimizar todo, maximizar, restaurar/enfocar, ajustar a izquierda/derecha o mover una ventana a otra pantalla/monitor (ej. segunda pantalla, pantalla principal, pantalla izquierda/derecha).',
+    directFinal: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['close', 'minimize', 'minimize_all', 'maximize', 'restore', 'focus', 'move_monitor', 'snap_left', 'snap_right'],
+          description: 'Acción de control de ventana a ejecutar.'
+        },
+        appName: {
+          type: 'string',
+          description:
+            'Nombre de la aplicación o ventana (ej. "Spotify", "Antigravity", "Discord", "Chrome", "active" para la ventana activa, o "all" para minimize_all).'
+        },
+        monitor: {
+          type: 'string',
+          description: 'Pantalla destino cuando action es "move_monitor": "2", "1", "primary", "secondary", "other", "left", "right".'
+        }
+      },
+      required: ['action', 'appName']
     }
   },
   {
@@ -312,12 +403,48 @@ class IrisToolsRegistry {
           };
         }
 
+        case 'youtube_search_play': {
+          const query = String(args.query || '').trim();
+          const res = await searchAndOpenYouTubeVideo(query);
+          return {
+            data: { ok: Boolean(res.executed), query, reply: res.reply },
+            artifact: res.artifact || null,
+            fallbackReply: res.reply,
+            expression: 'Feliz'
+          };
+        }
+
+        case 'web_search': {
+          const query = String(args.query || '').trim();
+          const platform = args.platform || 'google';
+          const res = await openWebSearch(query, platform);
+          return {
+            data: { ok: Boolean(res.executed), query, platform, reply: res.reply },
+            artifact: res.artifact || null,
+            fallbackReply: res.reply,
+            expression: 'Feliz'
+          };
+        }
+
         case 'spotify_control': {
           const action = args.action || 'play_pause';
           const vol = args.volumePercent !== undefined ? Number(args.volumePercent) : null;
-          const msg = await executeMediaControl(action, vol);
+          const target = args.target === 'spotify' ? 'spotify' : 'system';
+          const msg = await executeMediaControl(action, vol, target);
           return {
-            data: { ok: true, action, message: msg },
+            data: { ok: true, action, target, message: msg },
+            artifact: null,
+            fallbackReply: msg,
+            expression: 'Feliz'
+          };
+        }
+
+        case 'os_volume_control': {
+          const action = args.action || 'set_volume';
+          const vol = args.volumePercent !== undefined ? Number(args.volumePercent) : null;
+          const msg = await executeMediaControl(action, vol, 'system');
+          return {
+            data: { ok: true, action, target: 'system', message: msg },
             artifact: null,
             fallbackReply: msg,
             expression: 'Feliz'
@@ -669,6 +796,20 @@ class IrisToolsRegistry {
             artifact: null,
             fallbackReply: reply,
             expression: 'Feliz'
+          };
+        }
+
+        case 'os_window_control': {
+          const res = await controlWindowsWindow({
+            action: args.action,
+            appName: args.appName || '',
+            monitor: args.monitor || '2'
+          });
+          return {
+            data: { ok: Boolean(res.ok), action: args.action, appName: args.appName, monitor: args.monitor, reply: res.reply },
+            artifact: null,
+            fallbackReply: res.reply,
+            expression: res.ok ? 'Feliz' : 'Duda'
           };
         }
 

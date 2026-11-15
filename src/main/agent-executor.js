@@ -46,6 +46,72 @@ for ($i = 0; $i -lt ${safeCount}; $i++) {
 }
 
 /**
+ * Sets Windows Master Volume to an exact percentage (0-100) via CoreAudio COM
+ */
+function setWindowsSystemVolume(volumePercent) {
+  const safePct = Math.max(0, Math.min(100, Math.round(Number(volumePercent) || 0)));
+  return new Promise((resolve) => {
+    const ps = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+    int RegisterControlChangeNotify(IntPtr pNotify);
+    int UnregisterControlChangeNotify(IntPtr pNotify);
+    int GetChannelCount(out int pnChannelCount);
+    int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
+    int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
+    int GetMasterVolumeLevel(out float pfLevelDB);
+    int GetMasterVolumeLevelScalar(out float pfLevel);
+    int SetChannelVolumeLevel(uint nChannel, float fLevelDB, Guid pguidEventContext);
+    int SetChannelVolumeLevelScalar(uint nChannel, float fLevel, Guid pguidEventContext);
+    int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
+    int GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
+    int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, Guid pguidEventContext);
+    int GetMute(out bool pbMute);
+}
+
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+    int Activate(ref Guid id, int clsCtx, int activationParams, out IAudioEndpointVolume aev);
+}
+
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+    int NotImpl1();
+    int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
+}
+
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumeratorComObject { }
+
+public class WinCoreAudio {
+    private static IAudioEndpointVolume GetVol() {
+        var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
+        IMMDevice dev = null;
+        Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, 1, out dev));
+        IAudioEndpointVolume epv = null;
+        var epvid = typeof(IAudioEndpointVolume).GUID;
+        Marshal.ThrowExceptionForHR(dev.Activate(ref epvid, 23, 0, out epv));
+        return epv;
+    }
+    public static void SetVolume(int pct) {
+        float scalar = Math.Max(0f, Math.Min(1f, pct / 100f));
+        var v = GetVol();
+        if (pct > 0) v.SetMute(false, Guid.Empty);
+        v.SetMasterVolumeLevelScalar(scalar, Guid.Empty);
+    }
+}
+"@
+[WinCoreAudio]::SetVolume(${safePct})
+`;
+    runPowerShellHidden(ps, () => resolve(true));
+  });
+}
+
+/**
  * Checks if Spotify desktop app is installed on this Windows PC
  */
 function isSpotifyInstalled() {
@@ -180,21 +246,340 @@ async function findSpotifyEntityId(searchString, entityType = 'track') {
  * Finds the first YouTube video ID for a song/query so it can autoplay immediately
  */
 async function findYouTubeVideoId(query) {
+  const results = await searchYouTubeVideos(query, false);
+  return results.length > 0 ? results[0].id : null;
+}
+
+function normalizeTextForSearchMatch(str) {
+  return String(str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeVideoSearchQuery(rawQuery) {
+  let q = String(rawQuery || '').trim();
+  q = q.replace(/^[¿¡.,;:!?"'\s]+|[.,;:!?"'\s]+$/g, '');
+
+  const prefixPatterns = [
+    /^(?:oye|hola|ey|hey|buenas|iris|por\s+favor|porfa|vale|venga|si|sí|claro|ok|bueno)[,\s]+/i,
+    /^(?:me\s+puedes|me\s+podr[ií]as|puedes|podr[ií]as|quiero\s+que\s+me|quiero\s+que|quiero|me\s+gustar[ií]a|intenta)\s+/i,
+    /^(?:b[uú]scame|buscame|busca|buscar|encu[eé]ntrame|encuentra|encontrar|p[oó]nme|pon|poner|[aá]breme|abre|abrir|mu[eé]strame|ens[eé][nñ]ame|reprod[uú]ceme|reproduce|reproducir)\s+/i,
+    /^(?:en\s+youtube\s+|en\s+twitch\s+|en\s+google\s+)?(?:el\s+|un\s+|alg[uú]n\s+|los\s+)?(?:clip|clips|v[ií]deo|video|v[ií]deos|videos|short|shorts|momento)\s+(?:de\s+youtube\s+|de\s+twitch\s+)?(?:donde|en\s+el\s+que|en\s+que|cuando|de|sobre)?\s*/i,
+    /^(?:donde|en\s+el\s+que|en\s+que)\s+/i
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pat of prefixPatterns) {
+      const next = q.replace(pat, '').trim();
+      if (next && next !== q) {
+        q = next;
+        changed = true;
+      }
+    }
+  }
+
+  q = q
+    .replace(/\s+(?:en\s+youtube|por\s+favor|porfa|ahora\s+mismo|ahora|ya)$/i, '')
+    .replace(/\bwanger\b/gi, 'Guanyar')
+    .replace(/\bgua[nñ]ar\b/gi, 'Guanyar')
+    .replace(/\bguayar\b/gi, 'Guanyar')
+    .replace(/\bperera\b/gi, 'Pereira')
+    .replace(/\bchocas\b/gi, 'Xokas')
+    .replace(/\bauro\s*play\b/gi, 'AuronPlay')
+    .replace(/\bgreff\b/gi, 'Grefg')
+    .replace(/\bdj\s*mari+o\b/gi, 'DJ Mario')
+    .trim();
+
+  return q || String(rawQuery || '').trim();
+}
+
+function parseYouTubeDurationSeconds(durationText) {
+  const parts = String(durationText || '')
+    .trim()
+    .split(':')
+    .map((n) => Number(n));
+  if (parts.length === 0 || parts.some((n) => !Number.isFinite(n))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+function cleanShortTitle(rawText) {
+  return String(rawText || '')
+    .replace(/,\s*[\d.,]+\s*(?:mil|millones|k|m)?\s*(?:de\s+)?(?:visualizaciones|vistas|views)\s*-\s*(?:reproducir|play)\s+short\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function searchYouTubeVideos(query, preferClips = false) {
   try {
     const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
     const res = await fetch(url, {
+      signal: AbortSignal.timeout(5500),
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
       }
     });
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const html = await res.text();
-    const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    return match ? match[1] : null;
+
+    const candidates = [];
+    const seen = new Set();
+    const pushCandidate = (item) => {
+      if (!item || !item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      candidates.push(item);
+    };
+
+    const idx = html.indexOf('ytInitialData = ');
+    const endIdx = idx !== -1 ? html.indexOf(';</script>', idx) : -1;
+    if (idx !== -1 && endIdx > idx) {
+      try {
+        const data = JSON.parse(html.slice(idx + 16, endIdx));
+        const rootContents =
+          data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+
+        const visitNode = (node) => {
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node)) {
+            for (const el of node) visitNode(el);
+            return;
+          }
+
+          if (node.videoRenderer?.videoId) {
+            const v = node.videoRenderer;
+            const title =
+              v.title?.runs?.map((r) => r.text).join('') || v.title?.simpleText || '';
+            const channel =
+              v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || '';
+            const duration = v.lengthText?.simpleText || '';
+            pushCandidate({
+              id: v.videoId,
+              title: title.trim() || 'Vídeo de YouTube',
+              channel: channel.trim(),
+              duration: duration.trim(),
+              isShort: false
+            });
+            return;
+          }
+
+          if (node.shortsLockupViewModel) {
+            const s = node.shortsLockupViewModel;
+            const id =
+              s.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId ||
+              (String(s.entityId || '').match(/([a-zA-Z0-9_-]{11})$/)?.[1] || '');
+            const title =
+              s.overlayMetadata?.primaryText?.content || cleanShortTitle(s.accessibilityText || '');
+            if (id) {
+              pushCandidate({
+                id,
+                title: title.trim() || 'Short de YouTube',
+                channel: '',
+                duration: 'Short/Clip',
+                isShort: true
+              });
+            }
+            return;
+          }
+
+          if (node.reelItemRenderer?.videoId) {
+            const r = node.reelItemRenderer;
+            const title =
+              r.headline?.simpleText || r.headline?.runs?.map((x) => x.text).join('') || '';
+            pushCandidate({
+              id: r.videoId,
+              title: title.trim() || 'Short de YouTube',
+              channel: '',
+              duration: 'Short/Clip',
+              isShort: true
+            });
+            return;
+          }
+
+          for (const key of Object.keys(node)) {
+            if (key === 'contents' || key === 'itemSectionRenderer' || key === 'gridShelfViewModel' || key === 'reelShelfRenderer' || key === 'shelfRenderer' || key === 'items' || key === 'content') {
+              visitNode(node[key]);
+            }
+          }
+        };
+
+        visitNode(rootContents);
+      } catch {
+        // fall through to regex fallback
+      }
+    }
+
+    if (candidates.length === 0) {
+      const re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+      let m;
+      while ((m = re.exec(html)) !== null && candidates.length < 10) {
+        pushCandidate({
+          id: m[1],
+          title: query,
+          channel: '',
+          duration: '',
+          isShort: false
+        });
+      }
+    }
+
+    const stopwords = new Set([
+      'a', 'al', 'algo', 'con', 'cuando', 'de', 'del', 'donde', 'e', 'el', 'en',
+      'es', 'la', 'las', 'lo', 'los', 'mi', 'o', 'para', 'por', 'que', 'se', 'su',
+      'un', 'una', 'y', 'clip', 'clips', 'video', 'videos', 'short', 'shorts', 'youtube'
+    ]);
+    const canonicalToken = (tok) =>
+      tok
+        .replace(/^(dj)?mari+o$/, 'djmario')
+        .replace(/^pe+rei+ra.*$/, 'pereira');
+
+    const rawTokens = normalizeTextForSearchMatch(query)
+      .split(' ')
+      .filter((t) => t.length >= 2 && !stopwords.has(t))
+      .map(canonicalToken);
+    const queryTokens = [...new Set(rawTokens)];
+
+    const scored = candidates.map((item, idx) => {
+      const hayNorm = normalizeTextForSearchMatch(`${item.title} ${item.channel}`);
+      const hayCompact = hayNorm.replace(/\s+/g, '').replace(/i+/g, 'i');
+      let score = (candidates.length - idx) * 0.05;
+
+      for (const tok of queryTokens) {
+        if (hayNorm.includes(tok) || hayCompact.includes(tok.replace(/i+/g, 'i'))) {
+          score += 3;
+        }
+      }
+
+      if (preferClips) {
+        const secs = parseYouTubeDurationSeconds(item.duration);
+        if (item.isShort || (secs !== null && secs <= 240)) {
+          score += 1.5;
+        }
+      }
+
+      return { ...item, _score: score };
+    });
+
+    scored.sort((a, b) => b._score - a._score);
+    return scored.map(({ _score, ...rest }) => rest);
   } catch {
-    return null;
+    return [];
   }
+}
+
+async function searchAndOpenYouTubeVideo(rawQuery) {
+  const preferClips = /\b(clip|clips|short|shorts|momento|enfado|insulta|pelea|reacci[oó]n|reaccion)\b/i.test(
+    String(rawQuery || '')
+  );
+  const cleanQuery = normalizeVideoSearchQuery(rawQuery);
+  const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`;
+  const googleVideoSearchUrl = `https://www.google.com/search?tbm=vid&q=${encodeURIComponent(
+    preferClips ? `${cleanQuery} clip` : cleanQuery
+  )}`;
+
+  const videos = await searchYouTubeVideos(cleanQuery, preferClips);
+
+  if (videos.length === 0) {
+    exec(`start "" "${youtubeSearchUrl}"`);
+    return {
+      executed: true,
+      reply: `No obtuve un vídeo directo, así que te abrí los resultados de "${cleanQuery}" en YouTube.`,
+      artifact: {
+        badge: 'YouTube',
+        title: `Búsqueda: ${cleanQuery}`,
+        subtitle: 'Abierto en tu navegador',
+        actions: [
+          { label: 'Ver en YouTube', url: youtubeSearchUrl },
+          { label: 'Buscar clip en Google / TikTok', url: googleVideoSearchUrl }
+        ]
+      }
+    };
+  }
+
+  const top = videos[0];
+  const topUrl = `https://www.youtube.com/watch?v=${top.id}`;
+  exec(`start "" "${topUrl}"`);
+
+  const topSubtitle = top.channel
+    ? `${top.channel}${top.duration ? ` · ${top.duration}` : ''}`
+    : top.duration
+      ? `YouTube · ${top.duration} · Otros clips encontrados:`
+      : 'Abierto en tu navegador · Otros clips encontrados:';
+
+  const alternatives = videos.slice(1, 5).map((v) => ({
+    label: v.channel ? `${v.title} (${v.channel})` : v.title,
+    actionLabel: 'Ver',
+    url: `https://www.youtube.com/watch?v=${v.id}`
+  }));
+
+  return {
+    executed: true,
+    reply: `Abriendo "${top.title}" en YouTube.`,
+    artifact:
+      videos.length > 1
+        ? {
+            badge: 'YouTube',
+            title: top.title,
+            subtitle: topSubtitle,
+            items: alternatives,
+            actions: [
+              { label: 'Ver todos en YouTube', url: youtubeSearchUrl },
+              { label: 'Buscar clip en Google / TikTok', url: googleVideoSearchUrl }
+            ]
+          }
+        : null
+  };
+}
+
+async function openWebSearch(rawQuery, platform = 'google') {
+  let clean = String(rawQuery || '').trim();
+  clean = clean
+    .replace(/^(?:busca|b[uú]scame|buscar|abre|abrir)\s+(?:en\s+(?:google|internet|la\s+web|twitch|tiktok)\s+)?/i, '')
+    .trim();
+
+  if (!clean) {
+    return { executed: false, reply: 'Dime qué quieres que busque en Internet.', artifact: null };
+  }
+
+  let targetUrl = '';
+  let label = 'Google';
+  if (/^https?:\/\//i.test(clean)) {
+    targetUrl = clean;
+    label = 'el navegador';
+  } else {
+    switch (String(platform || 'google').toLowerCase()) {
+      case 'videos':
+        targetUrl = `https://www.google.com/search?tbm=vid&q=${encodeURIComponent(clean)}`;
+        label = 'vídeos de Google';
+        break;
+      case 'twitch':
+        targetUrl = `https://www.twitch.tv/search?term=${encodeURIComponent(clean)}`;
+        label = 'Twitch';
+        break;
+      case 'tiktok':
+        targetUrl = `https://www.tiktok.com/search?q=${encodeURIComponent(clean)}`;
+        label = 'TikTok';
+        break;
+      default:
+        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(clean)}`;
+        label = 'Google';
+        break;
+    }
+  }
+
+  exec(`start "" "${targetUrl}"`);
+  return {
+    executed: true,
+    reply: `He abierto la búsqueda de "${clean}" en ${label}.`,
+    artifact: null
+  };
 }
 
 /**
@@ -419,15 +804,26 @@ async function playMusicOrVideo(rawQuery, forcePlatform = null, explicitEntityTy
 /**
  * Controls Windows system media or volume
  */
-async function executeMediaControl(subCommand, volumePercent = null) {
-  const spotifyCmds = ['play_pause', 'pause', 'resume', 'next', 'prev', 'previous', 'vol_up', 'vol_down', 'set_volume'];
-  if (spotifyApi.isConnected() && spotifyCmds.includes(subCommand)) {
+async function executeMediaControl(subCommand, volumePercent = null, target = 'system') {
+  const spotifyTransportCmds = ['play_pause', 'pause', 'resume', 'next', 'prev', 'previous'];
+  const spotifyVolumeCmds = ['vol_up', 'vol_down', 'set_volume'];
+  const shouldUseSpotifyApi =
+    spotifyApi.isConnected() &&
+    (spotifyTransportCmds.includes(subCommand) || (target === 'spotify' && spotifyVolumeCmds.includes(subCommand)));
+
+  if (shouldUseSpotifyApi) {
     try {
       const ok = await Promise.race([
         spotifyApi.control(subCommand, volumePercent),
         new Promise((resolve) => setTimeout(() => resolve(false), 1200))
       ]);
+      if (ok && typeof ok === 'object' && ok.wakeUri) {
+        launchSpotifyWithCtrlSpace(ok.wakeUri);
+        return 'Reproducción reanudada en Spotify.';
+      }
       if (ok) {
+        const rawSpotPct = volumePercent !== null && volumePercent !== undefined ? Number(volumePercent) : 50;
+        const spotPct = Math.max(0, Math.min(100, Math.round(Number.isFinite(rawSpotPct) ? rawSpotPct : 50)));
         const msgs = {
           play_pause: 'Hecho, he alternado play y pausa en Spotify.',
           pause: 'He pausado la reproducción en Spotify.',
@@ -437,7 +833,7 @@ async function executeMediaControl(subCommand, volumePercent = null) {
           previous: 'Canción anterior en Spotify.',
           vol_up: 'He subido el volumen de Spotify.',
           vol_down: 'He bajado el volumen de Spotify.',
-          set_volume: `Volumen de Spotify ajustado al ${Math.round(Number(volumePercent) || 50)}%.`
+          set_volume: `Volumen de Spotify ajustado al ${spotPct}%.`
         };
         return msgs[subCommand];
       }
@@ -463,15 +859,21 @@ async function executeMediaControl(subCommand, volumePercent = null) {
     case 'previous':
       await sendWindowsMediaKey(177, 1); // VK_MEDIA_PREV_TRACK
       return 'Volviendo a la canción anterior.';
+    case 'set_volume': {
+      const rawPct = volumePercent !== null && volumePercent !== undefined ? Number(volumePercent) : 50;
+      const pct = Math.max(0, Math.min(100, Math.round(Number.isFinite(rawPct) ? rawPct : 50)));
+      await setWindowsSystemVolume(pct);
+      return `Volumen del ordenador ajustado al ${pct}%.`;
+    }
     case 'vol_up':
-      await sendWindowsMediaKey(175, 4); // VK_VOLUME_UP (single PS call)
-      return 'He subido el volumen del sistema.';
+      await sendWindowsMediaKey(175, 5); // VK_VOLUME_UP (single PS call)
+      return 'He subido el volumen del ordenador.';
     case 'vol_down':
-      await sendWindowsMediaKey(174, 4); // VK_VOLUME_DOWN (single PS call)
-      return 'He bajado el volumen del sistema.';
+      await sendWindowsMediaKey(174, 5); // VK_VOLUME_DOWN (single PS call)
+      return 'He bajado el volumen del ordenador.';
     case 'mute':
       await sendWindowsMediaKey(173, 1); // VK_VOLUME_MUTE
-      return 'Audio del sistema silenciado/activado.';
+      return 'Audio del ordenador silenciado/activado.';
     default:
       return 'Comando multimedia ejecutado.';
   }
@@ -483,5 +885,8 @@ module.exports = {
   launchSpotifyWithCtrlSpace,
   extractCleanSongQuery,
   findSpotifyEntityId,
-  findYouTubeVideoId
+  findYouTubeVideoId,
+  searchYouTubeVideos,
+  searchAndOpenYouTubeVideo,
+  openWebSearch
 };

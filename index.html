@@ -16,14 +16,37 @@
        ======================================================================== -->
   <header class="iris-top-dock">
     <div class="iris-bar mode-compact" id="iris-main-bar" data-node-id="8:2">
-      <!-- Iris / Avatar (64x64 at left:14px, top:14px — Click to talk / wake) -->
+      <!-- Iris / Avatar (64x64 at left:14px, top:14px — Click to talk / open track) -->
       <div class="iris-avatar-slot" id="iris-main-avatar-slot" title="Haz clic en Iris para hablar (o pulsa Ctrl+Espacio)"></div>
 
       <!-- Compact Idle Layer (Shown when folded at top of Windows) -->
       <div class="iris-compact-content" id="iris-compact-content" title="Haz clic en el texto para abrir el chat, escribir o configurar">
         <div class="iris-compact-info">
-          <span class="iris-compact-title" id="iris-compact-title">Iris</span>
-          <span class="iris-compact-sub" id="iris-compact-status">Ctrl + Espacio</span>
+          <div class="iris-compact-marquee-mask" id="iris-compact-title-mask">
+            <span class="iris-compact-title" id="iris-compact-title">Iris</span>
+          </div>
+          <div class="iris-compact-marquee-mask" id="iris-compact-status-mask">
+            <span class="iris-compact-sub" id="iris-compact-status">Ctrl + Espacio</span>
+          </div>
+        </div>
+
+        <div class="iris-compact-media-controls" id="iris-compact-media-controls">
+          <button type="button" class="iris-compact-media-btn is-primary" id="btn-compact-play-pause" title="Reproducir / Pausar Spotify">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+              <rect x="14" y="4" width="4" height="16" rx="1"></rect>
+            </svg>
+          </button>
+          <button type="button" class="iris-compact-media-btn" id="btn-compact-next" title="Siguiente canción">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M5 4l10 8-10 8V4z"></path>
+              <rect x="17" y="4" width="2.5" height="16" rx="1"></rect>
+            </svg>
+          </button>
+        </div>
+
+        <div class="iris-compact-progress-track" id="iris-compact-progress-track">
+          <div class="iris-compact-progress-fill" id="iris-compact-progress-fill"></div>
         </div>
       </div>
 
@@ -38,6 +61,67 @@
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </button>
+      </div>
+
+      <!-- Expanded Spotify HUD Layer (Shown when maximized in Music widget) -->
+      <div class="iris-spotify-hud-layer" id="iris-spotify-hud-layer">
+        <div class="iris-spotify-hud-top">
+          <div class="iris-spotify-hud-meta">
+            <div class="iris-compact-marquee-mask" id="spotify-hud-title-mask">
+              <span class="iris-spotify-hud-title" id="spotify-hud-title">Spotify</span>
+            </div>
+            <div class="iris-compact-marquee-mask" id="spotify-hud-artist-mask">
+              <span class="iris-spotify-hud-artist" id="spotify-hud-artist">Selecciona o reproduce una canción</span>
+            </div>
+          </div>
+
+          <div class="iris-spotify-transport-group">
+            <button type="button" class="iris-spotify-ctrl-btn" id="btn-spotify-hud-prev" title="Canción anterior">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="4.5" y="4" width="2.5" height="16" rx="1"></rect>
+                <path d="M19 4L9 12l10 8V4z"></path>
+              </svg>
+            </button>
+            <button type="button" class="iris-spotify-ctrl-btn is-primary" id="btn-spotify-hud-play-pause" title="Reproducir / Pausar">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="6 4 20 12 6 20 6 4"></polygon>
+              </svg>
+            </button>
+            <button type="button" class="iris-spotify-ctrl-btn" id="btn-spotify-hud-next" title="Siguiente canción">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M5 4l10 8-10 8V4z"></path>
+                <rect x="17" y="4" width="2.5" height="16" rx="1"></rect>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Timeline Seek Bar + Spotify Volume Slider -->
+        <div class="iris-spotify-hud-timeline">
+          <span class="iris-spotify-time-label" id="spotify-hud-current-time">0:00</span>
+          <input
+            type="range"
+            class="iris-spotify-seek-slider"
+            id="spotify-hud-seek-slider"
+            min="0"
+            max="1000"
+            value="0"
+          />
+          <div class="iris-spotify-vol-group" title="Volumen de Spotify">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            </svg>
+            <input
+              type="range"
+              class="iris-spotify-vol-slider"
+              id="spotify-hud-vol-slider"
+              min="0"
+              max="100"
+              value="50"
+            />
+          </div>
+        </div>
       </div>
 
       <!-- Subtle Hover Controls in bottom-left corner of Iris Bar (under Avatar) -->

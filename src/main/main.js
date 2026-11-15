@@ -11,6 +11,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { getSystemStatsSummary, openWindowsApp, inspectActiveScreen } = require('./os-tools');
+const { executeMediaControl } = require('./agent-executor');
 const { IrisAIOrchestrator } = require('./ai-orchestrator');
 const spotifyApi = require('./spotify-api');
 const { integrationsManager } = require('./integrations-manager');
@@ -515,6 +516,25 @@ app.whenReady().then(() => {
 
     ipcMain.handle('iris:spotify-status', () => spotifyApi.getStatus());
     ipcMain.handle('iris:spotify-now-playing', () => spotifyApi.getNowPlaying());
+    ipcMain.handle('iris:spotify-control', (_event, payload) => {
+      const action = typeof payload === 'string' ? payload : payload?.action;
+      const volumePercent = typeof payload === 'object' ? payload?.volumePercent : null;
+      return executeMediaControl(action, volumePercent, 'spotify');
+    });
+    ipcMain.handle('iris:spotify-seek', (_event, positionMs) => spotifyApi.seek(positionMs));
+    ipcMain.handle('iris:spotify-playlists', () => spotifyApi.getUserPlaylists());
+    ipcMain.handle('iris:spotify-add-to-playlist', (_event, { playlistId, trackUri, trackId }) =>
+      spotifyApi.addTrackToPlaylist(playlistId, trackUri, trackId)
+    );
+    ipcMain.handle('iris:spotify-open-track', (_event, uri) => {
+      const clean = String(uri || '').trim();
+      if (/^spotify:[a-zA-Z0-9:_-]+$/.test(clean)) {
+        const { exec } = require('child_process');
+        exec(`start "" "${clean}"`);
+        return { ok: true };
+      }
+      return openWindowsApp('spotify');
+    });
     ipcMain.handle('iris:spotify-connect', (_event, clientId) => spotifyApi.connect(clientId));
     ipcMain.handle('iris:spotify-disconnect', () => spotifyApi.disconnect());
 
@@ -607,7 +627,7 @@ function startDndMouseDodgeLoop() {
       targetWinX = slots.center;
     } else {
       const cursor = screen.getCursorScreenPoint();
-      const pillWidth = hasSpotifyCompact ? 268 : 210;
+      const pillWidth = hasSpotifyCompact ? 284 : 210;
       const pillHeight = 76;
       const activeSlotX = slots[currentSlot] ?? centerX;
       const pillCenterX = activeSlotX + winWidth / 2;

@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 const { desktopCapturer, shell } = require('electron');
-const { openWindowsApp, getSystemStatsSummary } = require('./os-tools');
+const { openWindowsApp, getSystemStatsSummary, resolveWindowAppAliases } = require('./os-tools');
 const { playMusicOrVideo, executeMediaControl } = require('./agent-executor');
 const spotifyApi = require('./spotify-api');
 const { integrationsManager } = require('./integrations-manager');
@@ -291,6 +291,8 @@ class IrisAIOrchestrator {
       '- Interpreta la intención real del usuario de forma natural y llama directamente a la herramienta adecuada.',
       '- Si una herramienta devuelve `connected: false`, explícale honestamente cómo conectarla en Ajustes > Conexiones.',
       '- Memoria Markdown: si el usuario aporta un dato personal duradero (preferencias, proyectos, gustos, equipo, rutinas) o pide recordar algo, usa `memory_remember` o `memory_notes`. Si pregunta por datos antiguos que no aparecen en la memoria núcleo de abajo, busca con `memory_notes` (`search` / `read`) antes de decir que no lo sabes.',
+      '- Vídeos, Clips y Web: si el usuario pide buscar, ver o poner un clip, vídeo, momento de streamer, directo o búsqueda en Internet, usa SIEMPRE `youtube_search_play` o `web_search`. Corrige posibles errores fonéticos del micrófono en nombres de creadores (ej. "Wanger" -> "Guanyar", "Dj Mario" -> "DjMaRiiO"). Nunca digas que no tienes herramientas para buscar clips o vídeos.',
+      '- Control de Ventanas y Pantallas: cuando el usuario pida cerrar una app/ventana, minimizar, maximizar, restaurar, poner a un lado o mover una aplicación a otra pantalla/monitor (ej. "mueve Antigravity a la segunda pantalla", "mueve Spotify a mi pantalla principal", "cierra Spotify", "minimiza Spotify"), usa SIEMPRE `os_window_control` (parámetros `action`, `appName`, `monitor`). NUNCA uses `web_search` ni `os_open_app` para cerrar o minimizar programas. Si una rutina como "modo trabajo" implica música, abrir apps y mover ventanas a pantallas concretas según la memoria, llama en el mismo turno a `spotify_play`, `os_open_app` y `os_window_control` para cada ventana e informa del resultado real devuelto por las herramientas.',
       '',
       integrationsSummary,
       '',
@@ -327,33 +329,158 @@ class IrisAIOrchestrator {
     }
     norm = norm.replace(/\s+(?:por\s+favor|porfa|ahora\s+mismo|ahora|ya)$/i, '').trim();
 
-    if (norm.split(/\s+/).length > 8) {
+    const isVideoOrClipRequest =
+      /^(?:buscame|busca|buscar|encuentrame|encuentra|ponme|pon|poner|abreme|abre|abrir|muestrame|ensename|quiero\s+ver)\s+(?:el\s+|un\s+|algun\s+|los\s+)?(?:clip|clips|video|videos|short|shorts)\b/i.test(
+        norm
+      ) ||
+      (/^(?:buscame|busca|buscar|encuentrame|encuentra|ponme|pon|poner|abreme|abre|abrir|muestrame|ensename|quiero\s+ver)\b/i.test(
+        norm
+      ) &&
+        /\b(?:en\s+youtube|clip\s+donde|clip\s+de|clip\s+en|video\s+donde|video\s+de|short\s+de|short\s+donde)\b/i.test(
+          norm
+        ));
+
+    if (isVideoOrClipRequest) {
+      const execResult = await toolsRegistry.executeTool('youtube_search_play', { query: userPrompt }, this);
+      const reply = execResult?.fallbackReply || 'Abriendo el vídeo en YouTube.';
+      this.pushConversationTurn(userPrompt, reply);
+      return {
+        reply,
+        artifact: execResult?.artifact || null,
+        expression: execResult?.expression || 'Feliz'
+      };
+    }
+
+    const moveMonitorMatch = norm.match(
+      /^(?:mueve(?:me)?|muevas|mover(?:me)?|mueble|pasa(?:me)?|pases|pasar(?:me)?|lleva(?:me)?|lleves|llevar(?:me)?|pon(?:me)?|pongas|poner(?:me)?|cambia(?:me)?|cambies|cambiar(?:me)?)\s+(.+?)\s+(?:a|al|en|hacia|para)\s+(?:(?:mi|tu|la|el)\s+)?(?:(segunda|segundo|2a?|secundaria|secundario|otra|otro|siguiente|primera|primer|1a?|principal|izquierda|derecha)\s+(?:pantalla|monitor)|(?:pantalla|monitor)\s+(?:(?:de\s+la|del|de)\s+)?(2|1|dos|uno|primera|primer|primero|segunda|segundo|principal|secundario|secundaria|izquierda|izquierdo|derecha|derecho|otra|otro))$/i
+    );
+    if (moveMonitorMatch && !/\b(?:pantalla|monitor)\b|\s+y\s+/i.test(moveMonitorMatch[1])) {
+      const targetApp = moveMonitorMatch[1].trim();
+      const targetMonRaw = moveMonitorMatch[2] || moveMonitorMatch[3] || '2';
+      let mon = '2';
+      if (/^(1|1a|uno|primera|primer|primero|principal)$/i.test(targetMonRaw)) mon = '1';
+      else if (/^(2|2a|dos|segunda|segundo|secundaria|secundario)$/i.test(targetMonRaw)) mon = '2';
+      else if (/^izquierd[ao]$/i.test(targetMonRaw)) mon = 'left';
+      else if (/^derech[ao]$/i.test(targetMonRaw)) mon = 'right';
+      else if (/^(otra|otro|siguiente)$/i.test(targetMonRaw)) mon = 'other';
+
+      const execResult = await toolsRegistry.executeTool(
+        'os_window_control',
+        { action: 'move_monitor', appName: targetApp, monitor: mon },
+        this
+      );
+      const reply = execResult?.fallbackReply || 'Listo.';
+      this.pushConversationTurn(userPrompt, reply);
+      return {
+        reply,
+        artifact: null,
+        expression: execResult?.expression || 'Feliz'
+      };
+    }
+
+    if (
+      /^(?:minimiza(?:me)?|minimizar(?:me)?)\s+(?:todas\s+las\s+ventanas|todo)$|^(?:muestra(?:me)?|mostrar|ve\s+al)\s+(?:el\s+)?escritorio$/i.test(
+        norm
+      )
+    ) {
+      const execResult = await toolsRegistry.executeTool(
+        'os_window_control',
+        { action: 'minimize_all', appName: 'all' },
+        this
+      );
+      const reply = execResult?.fallbackReply || 'He minimizado todas las ventanas.';
+      this.pushConversationTurn(userPrompt, reply);
+      return {
+        reply,
+        artifact: null,
+        expression: execResult?.expression || 'Feliz'
+      };
+    }
+
+    const snapSideMatch = norm.match(
+      /^(?:pon(?:me)?|poner(?:me)?|ajusta(?:me)?|ajustar(?:me)?|mueve(?:me)?|mover(?:me)?|lleva(?:me)?|llevar(?:me)?)\s+(.+?)\s+(?:a\s+la\s+|en\s+la\s+|hacia\s+la\s+)?(?:mitad\s+)?(izquierda|derecha)$/i
+    );
+    if (snapSideMatch) {
+      const targetApp = snapSideMatch[1].trim();
+      const sideAction = snapSideMatch[2].toLowerCase() === 'izquierda' ? 'snap_left' : 'snap_right';
+      const execResult = await toolsRegistry.executeTool(
+        'os_window_control',
+        { action: sideAction, appName: targetApp },
+        this
+      );
+      const reply = execResult?.fallbackReply || 'Listo.';
+      this.pushConversationTurn(userPrompt, reply);
+      return {
+        reply,
+        artifact: null,
+        expression: execResult?.expression || 'Feliz'
+      };
+    }
+
+    const windowActionMatch = norm.match(
+      /^(?:(cierra(?:me)?|cerrar(?:me)?|quita(?:me)?|quitar(?:me)?|mata(?:r)?|termina(?:r)?)|(minimiza(?:me)?|minimizar(?:me)?)|(maximiza(?:me)?|maximizar(?:me)?|agranda(?:me)?|agrandar(?:me)?)|(restaura(?:me)?|restaurar(?:me)?|enfoca(?:r)?|trae\s+al\s+frente|abre(?:me)?\s+la\s+ventana\s+de))\s+(?:la\s+aplicacion\s+de\s+|la\s+app\s+de\s+|la\s+ventana\s+de\s+|el\s+programa\s+de\s+|el\s+|la\s+)?(.+)$/i
+    );
+    if (windowActionMatch && !/^(?:sesion|el\s+pc|el\s+ordenador|windows|equipo)$/i.test(windowActionMatch[5].trim())) {
+      const winAction = windowActionMatch[1]
+        ? 'close'
+        : windowActionMatch[2]
+          ? 'minimize'
+          : windowActionMatch[3]
+            ? 'maximize'
+            : 'restore';
+      const targetApp = windowActionMatch[5].trim();
+      const execResult = await toolsRegistry.executeTool(
+        'os_window_control',
+        { action: winAction, appName: targetApp },
+        this
+      );
+      const reply = execResult?.fallbackReply || 'Listo.';
+      const closedSpotify = winAction === 'close' && /\bspotify\b/i.test(targetApp);
+      this.pushConversationTurn(userPrompt, reply);
+      return {
+        reply,
+        artifact: null,
+        expression: execResult?.expression || 'Feliz',
+        ...(closedSpotify ? { isSpotifyAction: false, isSpotifyPause: true } : {})
+      };
+    }
+
+    if (norm.split(/\s+/).length > 11) {
       return null;
     }
+
+    const isSpotifyTarget = /\bspotify\b/.test(norm);
+    const target = isSpotifyTarget ? 'spotify' : 'system';
+    const volTargetOpt =
+      '(?:\\s+(?:del|de\\s+mi|de|en)\\s+(?:ordenador|pc|sistema|equipo|windows|computadora|portatil|spotify))?';
 
     let action = null;
     let volumePercent;
 
     const volSetMatch = norm.match(
-      /^(?:(?:pon|poner|ajusta|ajustar|baja|bajar|sube|subir|deja|dejar)\s+)?(?:el\s+)?volumen\s+(?:al|a)\s+(\d{1,3})\s*%?$/
+      new RegExp(
+        `^(?:(?:pon|poner|ajusta|ajustar|baja|bajar|sube|subir|deja|dejar|cambia|cambiar)\\s+)?(?:el\\s+)?volumen${volTargetOpt}\\s+(?:al|a)\\s+(\\d{1,3})\\s*%?${volTargetOpt}$`
+      )
     );
     if (volSetMatch) {
       action = 'set_volume';
       volumePercent = Math.max(0, Math.min(100, Number(volSetMatch[1])));
     } else if (
-      /^(?:sube|subir|subelo|mas)(?:\s+un\s+(?:poco|poquito))?\s+(?:el\s+)?(?:volumen|la\s+musica|el\s+sonido)$|^sube\s+volumen$|^mas\s+volumen$/.test(
-        norm
-      )
+      new RegExp(
+        `^(?:sube|subir|subelo|mas)(?:\\s+un\\s+(?:poco|poquito))?\\s+(?:el\\s+)?(?:volumen|la\\s+musica|el\\s+sonido)${volTargetOpt}$|^sube\\s+volumen${volTargetOpt}$|^mas\\s+volumen${volTargetOpt}$`
+      ).test(norm)
     ) {
       action = 'vol_up';
     } else if (
-      /^(?:baja|bajar|bajalo|menos)(?:\s+un\s+(?:poco|poquito))?\s+(?:el\s+)?(?:volumen|la\s+musica|el\s+sonido)$|^baja\s+volumen$|^menos\s+volumen$/.test(
-        norm
-      )
+      new RegExp(
+        `^(?:baja|bajar|bajalo|menos)(?:\\s+un\\s+(?:poco|poquito))?\\s+(?:el\\s+)?(?:volumen|la\\s+musica|el\\s+sonido)${volTargetOpt}$|^baja\\s+volumen${volTargetOpt}$|^menos\\s+volumen${volTargetOpt}$`
+      ).test(norm)
     ) {
       action = 'vol_down';
     } else if (
-      /^(?:silencia|silenciar|mute|mutea)(?:\s+(?:el\s+volumen|el\s+sonido|la\s+musica|el\s+pc))?$/.test(norm)
+      new RegExp(
+        `^(?:silencia|silenciar|mute|mutea)(?:\\s+(?:el\\s+(?:volumen|sonido|ordenador|pc|equipo|sistema)|la\\s+musica))?${volTargetOpt}$`
+      ).test(norm)
     ) {
       action = 'mute';
     } else if (
@@ -384,14 +511,19 @@ class IrisAIOrchestrator {
 
     if (!action) return null;
 
-    const toolArgs = volumePercent !== undefined ? { action, volumePercent } : { action };
-    const execResult = await toolsRegistry.executeTool('spotify_control', toolArgs, this);
+    const isVolumeCmd = ['set_volume', 'vol_up', 'vol_down', 'mute'].includes(action);
+    const toolName = isVolumeCmd && target === 'system' ? 'os_volume_control' : 'spotify_control';
+    const toolArgs = volumePercent !== undefined ? { action, volumePercent, target } : { action, target };
+    const execResult = await toolsRegistry.executeTool(toolName, toolArgs, this);
     const reply = execResult?.fallbackReply || 'Listo.';
     this.pushConversationTurn(userPrompt, reply);
     return {
       reply,
       artifact: execResult?.artifact || null,
-      expression: execResult?.expression || 'Feliz'
+      expression: execResult?.expression || 'Feliz',
+      isSpotifyAction: toolName.startsWith('spotify_') || isSpotifyTarget,
+      isSpotifyVolumeChange: toolName === 'spotify_control' && isVolumeCmd,
+      isSpotifyPause: toolName === 'spotify_control' && action === 'pause'
     };
   }
 
@@ -416,7 +548,10 @@ class IrisAIOrchestrator {
         artifact: fastReflexResult.artifact || null,
         expression: fastReflexResult.expression || 'Feliz',
         postExpression: 'Disponible',
-        latencyMs: Math.round(performance.now() - t0)
+        latencyMs: Math.round(performance.now() - t0),
+        isSpotifyAction: Boolean(fastReflexResult.isSpotifyAction),
+        isSpotifyVolumeChange: Boolean(fastReflexResult.isSpotifyVolumeChange),
+        isSpotifyPause: Boolean(fastReflexResult.isSpotifyPause)
       };
     }
 
@@ -437,7 +572,10 @@ class IrisAIOrchestrator {
       artifact: agentResult.artifact || null,
       expression: agentResult.expression || 'Respondiendo',
       postExpression: 'Disponible',
-      latencyMs: Math.round(performance.now() - t0)
+      latencyMs: Math.round(performance.now() - t0),
+      isSpotifyAction: Boolean(agentResult.isSpotifyAction),
+      isSpotifyVolumeChange: Boolean(agentResult.isSpotifyVolumeChange),
+      isSpotifyPause: Boolean(agentResult.isSpotifyPause)
     };
   }
 
@@ -526,6 +664,90 @@ class IrisAIOrchestrator {
     throw new Error('ALL_GEMINI_SLOTS_EXHAUSTED');
   }
 
+  async executeOrderedToolCalls(calls, state) {
+    const getPriority = (name) => {
+      if (name === 'os_open_app' || name === 'spotify_play' || name === 'youtube_search_play') return 0;
+      if (name === 'os_window_control') return 2;
+      return 1;
+    };
+
+    const positioningActions = new Set(['move_monitor', 'maximize', 'restore', 'focus', 'snap_left', 'snap_right']);
+    const windowControlTokens = new Set();
+    for (const call of calls) {
+      if (
+        call.name === 'os_window_control' &&
+        positioningActions.has(String(call.args?.action || '').toLowerCase()) &&
+        call.args?.appName
+      ) {
+        const resolved = resolveWindowAppAliases(String(call.args.appName));
+        for (const tok of resolved.tokens) {
+          if (tok && !tok.startsWith('__')) windowControlTokens.add(tok);
+        }
+      }
+    }
+
+    const isRedundantOpenCall = (name, args) => {
+      if (name !== 'os_open_app' || windowControlTokens.size === 0) return false;
+      const resolved = resolveWindowAppAliases(String(args?.appName || ''));
+      return resolved.tokens.some((tok) => windowControlTokens.has(tok));
+    };
+
+    const indexed = calls.map((call, idx) => ({ call, idx, prio: getPriority(call.name) }));
+    indexed.sort((a, b) => a.prio - b.prio || a.idx - b.idx);
+
+    const resultsByIdx = new Array(calls.length);
+    let launchedSomething = false;
+    let waitedForLaunch = false;
+
+    for (const item of indexed) {
+      const { name, args } = item.call;
+      if (isRedundantOpenCall(name, args)) {
+        state.executedAnyTool = true;
+        state.latestExpression = 'Feliz';
+        state.latestFallbackReply = 'Abierto.';
+        resultsByIdx[item.idx] = {
+          data: { ok: true, appName: args?.appName || '', reply: 'Abierto.' },
+          fallbackReply: 'Abierto.',
+          expression: 'Feliz'
+        };
+        continue;
+      }
+
+      if (name === 'os_window_control' && launchedSomething && !waitedForLaunch) {
+        waitedForLaunch = true;
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+
+      const execResult = await toolsRegistry.executeTool(name, args || {}, this);
+      state.executedAnyTool = true;
+
+      if (name === 'os_open_app' || name === 'spotify_play') {
+        launchedSomething = true;
+      }
+
+      if (name.startsWith('spotify_')) {
+        state.isSpotifyAction = true;
+        if (
+          name === 'spotify_control' &&
+          ['set_volume', 'vol_up', 'vol_down', 'mute'].includes(args?.action)
+        ) {
+          state.isSpotifyVolumeChange = true;
+        }
+        if (name === 'spotify_control' && args?.action === 'pause') {
+          state.isSpotifyPause = true;
+        }
+      }
+
+      if (execResult.artifact) state.latestArtifact = execResult.artifact;
+      if (execResult.expression) state.latestExpression = execResult.expression;
+      if (execResult.fallbackReply) state.latestFallbackReply = execResult.fallbackReply;
+
+      resultsByIdx[item.idx] = execResult;
+    }
+
+    return resultsByIdx;
+  }
+
   async callGeminiAgent(userPrompt, systemInstruction) {
     const declarations = toolsRegistry.getGeminiDeclarations();
     const contents = [
@@ -536,10 +758,15 @@ class IrisAIOrchestrator {
       { role: 'user', parts: [{ text: userPrompt }] }
     ];
 
-    let latestArtifact = null;
-    let latestExpression = 'Respondiendo';
-    let latestFallbackReply = '';
-    let executedAnyTool = false;
+    const state = {
+      latestArtifact: null,
+      latestExpression: 'Respondiendo',
+      latestFallbackReply: '',
+      executedAnyTool: false,
+      isSpotifyAction: /\bspotify\b/i.test(userPrompt),
+      isSpotifyVolumeChange: false,
+      isSpotifyPause: false
+    };
 
     for (let round = 0; round < 3; round++) {
       const includeTools = round < 2;
@@ -552,12 +779,15 @@ class IrisAIOrchestrator {
           declarations: includeTools ? declarations : null
         });
       } catch (err) {
-        if (executedAnyTool && latestFallbackReply) {
-          this.pushConversationTurn(userPrompt, latestFallbackReply);
+        if (state.executedAnyTool && state.latestFallbackReply) {
+          this.pushConversationTurn(userPrompt, state.latestFallbackReply);
           return {
-            reply: latestFallbackReply,
-            artifact: latestArtifact,
-            expression: latestExpression
+            reply: state.latestFallbackReply,
+            artifact: state.latestArtifact,
+            expression: state.latestExpression,
+            isSpotifyAction: state.isSpotifyAction,
+            isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+            isSpotifyPause: state.isSpotifyPause
           };
         }
         throw err;
@@ -571,52 +801,49 @@ class IrisAIOrchestrator {
           .trim()
           .replace(/^["']|["']$/g, '');
 
-        const finalReply = text || latestFallbackReply;
+        const finalReply = text || state.latestFallbackReply;
         if (finalReply) {
           this.pushConversationTurn(userPrompt, finalReply);
           return {
             reply: finalReply,
-            artifact: latestArtifact,
-            expression: executedAnyTool ? latestExpression : 'Respondiendo'
+            artifact: state.latestArtifact,
+            expression: state.executedAnyTool ? state.latestExpression : 'Respondiendo',
+            isSpotifyAction: state.isSpotifyAction,
+            isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+            isSpotifyPause: state.isSpotifyPause
           };
         }
         break;
       }
 
-      const toolResponses = [];
-      for (const part of fnCallParts.slice(0, 4)) {
-        const fnName = part.functionCall.name;
-        const fnArgs = part.functionCall.args || {};
-        const execResult = await toolsRegistry.executeTool(fnName, fnArgs, this);
-        executedAnyTool = true;
+      const batchParts = fnCallParts.slice(0, 6);
+      const resultsByIdx = await this.executeOrderedToolCalls(
+        batchParts.map((part) => ({
+          name: part.functionCall.name,
+          args: part.functionCall.args || {}
+        })),
+        state
+      );
 
-        if (execResult.artifact) {
-          latestArtifact = execResult.artifact;
+      const toolResponses = batchParts.map((part, idx) => ({
+        functionResponse: {
+          name: part.functionCall.name,
+          response: { result: resultsByIdx[idx]?.data ?? { ok: true } }
         }
-        if (execResult.expression) {
-          latestExpression = execResult.expression;
-        }
-        if (execResult.fallbackReply) {
-          latestFallbackReply = execResult.fallbackReply;
-        }
-
-        toolResponses.push({
-          functionResponse: {
-            name: fnName,
-            response: { result: execResult.data ?? { ok: true } }
-          }
-        });
-      }
+      }));
 
       // Skip extra synthesis LLM round for immediate deterministic actions
       if (round === 0 && fnCallParts.length === 1) {
         const meta = toolsRegistry.getToolMeta(fnCallParts[0].functionCall.name);
-        if (meta?.directFinal && latestFallbackReply) {
-          this.pushConversationTurn(userPrompt, latestFallbackReply);
+        if (meta?.directFinal && state.latestFallbackReply) {
+          this.pushConversationTurn(userPrompt, state.latestFallbackReply);
           return {
-            reply: latestFallbackReply,
-            artifact: latestArtifact,
-            expression: latestExpression
+            reply: state.latestFallbackReply,
+            artifact: state.latestArtifact,
+            expression: state.latestExpression,
+            isSpotifyAction: state.isSpotifyAction,
+            isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+            isSpotifyPause: state.isSpotifyPause
           };
         }
       }
@@ -625,12 +852,15 @@ class IrisAIOrchestrator {
       contents.push({ role: 'user', parts: toolResponses });
     }
 
-    if (executedAnyTool && latestFallbackReply) {
-      this.pushConversationTurn(userPrompt, latestFallbackReply);
+    if (state.executedAnyTool && state.latestFallbackReply) {
+      this.pushConversationTurn(userPrompt, state.latestFallbackReply);
       return {
-        reply: latestFallbackReply,
-        artifact: latestArtifact,
-        expression: latestExpression
+        reply: state.latestFallbackReply,
+        artifact: state.latestArtifact,
+        expression: state.latestExpression,
+        isSpotifyAction: state.isSpotifyAction,
+        isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+        isSpotifyPause: state.isSpotifyPause
       };
     }
 
@@ -740,9 +970,15 @@ class IrisAIOrchestrator {
         const toolCalls = this.extractOllamaToolCalls(assistantMessage);
 
         if (toolCalls.length > 0) {
-          let latestArtifact = null;
-          let latestExpression = 'Feliz';
-          let latestFallbackReply = '';
+          const state = {
+            latestArtifact: null,
+            latestExpression: 'Feliz',
+            latestFallbackReply: '',
+            executedAnyTool: false,
+            isSpotifyAction: /\bspotify\b/i.test(userPrompt),
+            isSpotifyVolumeChange: false,
+            isSpotifyPause: false
+          };
           const turnMessages = [
             ...messages,
             {
@@ -752,27 +988,28 @@ class IrisAIOrchestrator {
             }
           ];
 
-          for (const tc of toolCalls.slice(0, 4)) {
-            const execResult = await toolsRegistry.executeTool(tc.name, tc.args, this);
-            if (execResult.artifact) latestArtifact = execResult.artifact;
-            if (execResult.expression) latestExpression = execResult.expression;
-            if (execResult.fallbackReply) latestFallbackReply = execResult.fallbackReply;
+          const batchCalls = toolCalls.slice(0, 6);
+          const resultsByIdx = await this.executeOrderedToolCalls(batchCalls, state);
 
+          for (let idx = 0; idx < batchCalls.length; idx++) {
             turnMessages.push({
               role: 'tool',
-              tool_name: tc.name,
-              content: JSON.stringify(execResult.data ?? { ok: true })
+              tool_name: batchCalls[idx].name,
+              content: JSON.stringify(resultsByIdx[idx]?.data ?? { ok: true })
             });
           }
 
           if (toolCalls.length === 1) {
             const meta = toolsRegistry.getToolMeta(toolCalls[0].name);
-            if (meta?.directFinal && latestFallbackReply) {
-              this.pushConversationTurn(userPrompt, latestFallbackReply);
+            if (meta?.directFinal && state.latestFallbackReply) {
+              this.pushConversationTurn(userPrompt, state.latestFallbackReply);
               return {
-                reply: latestFallbackReply,
-                artifact: latestArtifact,
-                expression: latestExpression
+                reply: state.latestFallbackReply,
+                artifact: state.latestArtifact,
+                expression: state.latestExpression,
+                isSpotifyAction: state.isSpotifyAction,
+                isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+                isSpotifyPause: state.isSpotifyPause
               };
             }
           }
@@ -788,8 +1025,11 @@ class IrisAIOrchestrator {
                 this.pushConversationTurn(userPrompt, synthText);
                 return {
                   reply: synthText,
-                  artifact: latestArtifact,
-                  expression: latestExpression
+                  artifact: state.latestArtifact,
+                  expression: state.latestExpression,
+                  isSpotifyAction: state.isSpotifyAction,
+                  isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+                  isSpotifyPause: state.isSpotifyPause
                 };
               }
             }
@@ -797,12 +1037,15 @@ class IrisAIOrchestrator {
             // fall back to deterministic tool summary
           }
 
-          if (latestFallbackReply) {
-            this.pushConversationTurn(userPrompt, latestFallbackReply);
+          if (state.latestFallbackReply) {
+            this.pushConversationTurn(userPrompt, state.latestFallbackReply);
             return {
-              reply: latestFallbackReply,
-              artifact: latestArtifact,
-              expression: latestExpression
+              reply: state.latestFallbackReply,
+              artifact: state.latestArtifact,
+              expression: state.latestExpression,
+              isSpotifyAction: state.isSpotifyAction,
+              isSpotifyVolumeChange: state.isSpotifyVolumeChange,
+              isSpotifyPause: state.isSpotifyPause
             };
           }
         }
@@ -1001,13 +1244,14 @@ Petición del usuario: ${userPrompt}`;
       const item = actionPayload.spotifyItem;
       const res = await spotifyApi.playItem(item);
       const title = item.subtitle ? `${item.name} — ${item.subtitle}` : item.name;
-      if (res.ok) return { reply: `Reproduciendo "${title}" en Spotify.` };
+      if (res.ok) return { reply: `Reproduciendo "${title}" en Spotify.`, isSpotifyAction: true };
       const { launchSpotifyWithCtrlSpace } = require('./agent-executor');
       launchSpotifyWithCtrlSpace(item.uri);
-      return { reply: `Poniendo "${title}" en Spotify.` };
+      return { reply: `Poniendo "${title}" en Spotify.`, isSpotifyAction: true };
     }
     if (actionPayload.actionType === 'play' && actionPayload.query) {
-      return await playMusicOrVideo(actionPayload.query);
+      const playRes = await playMusicOrVideo(actionPayload.query);
+      return { ...playRes, isSpotifyAction: true };
     }
     if (actionPayload.actionType === 'search' && actionPayload.query) {
       const url = `https://www.google.com/search?q=${encodeURIComponent(actionPayload.query)}`;

@@ -61,7 +61,7 @@ export function renderIrisAvatarHTML(state = 'Disponible', idSuffix = 'main') {
   `;
 }
 
-export function renderSpotifyDiscHTML(albumArtUrl = '', trackName = '', idSuffix = 'live') {
+export function renderSpotifyDiscHTML(albumArtUrl = '', trackName = '', idSuffix = 'live', isPlaying = true) {
   const safeTitle = String(trackName || 'Spotify').replace(/"/g, '&quot;');
   const safeUrl = String(albumArtUrl || '').replace(/"/g, '&quot;');
   const imgHtml = safeUrl
@@ -69,7 +69,7 @@ export function renderSpotifyDiscHTML(albumArtUrl = '', trackName = '', idSuffix
     : `<div class="iris-spotify-disc-fallback"></div>`;
   return `
     <div class="iris-avatar-svg-wrap iris-spotify-disc-wrap" data-state="SpotifyPlaying" id="iris-avatar-${idSuffix}">
-      <div class="iris-spotify-disc">
+      <div class="iris-spotify-disc ${isPlaying ? '' : 'is-paused'}">
         ${imgHtml}
         <span class="iris-spotify-disc-grooves"></span>
         <span class="iris-spotify-disc-center"></span>

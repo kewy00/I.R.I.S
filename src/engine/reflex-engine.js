@@ -22,6 +22,7 @@ export class IrisReflexEngine {
     this.preferredVoice = null;
     this.wsStt = null;
     this.currentSpeechId = 0;
+    this.lastTurnResult = null;
 
     this.initTTS();
     this.connectPythonSTT();
@@ -81,7 +82,7 @@ export class IrisReflexEngine {
             this.isListening = false;
             this.onTranscript('No te he escuchado bien', true);
             this.setState('Disponible');
-            this.onTurnFinished();
+            this.onTurnFinished(null);
           }
         } catch (err) {
           console.warn(err);
@@ -114,11 +115,13 @@ export class IrisReflexEngine {
         this.wsStt.send(JSON.stringify({ type: 'stop_listen' }));
       } else {
         this.setState('Disponible');
+        this.onTurnFinished(null);
       }
       return;
     }
 
-    // Barge-in: cancel ongoing speech in <10ms
+    // Barge-in: cancel ongoing speech in <10ms and invalidate prior utter callbacks
+    this.currentSpeechId++;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -167,10 +170,11 @@ export class IrisReflexEngine {
     this.onLatency(result.latencyMs || Math.round(t1 - t0));
 
     this.setState(result.expression || 'Respondiendo');
-    this.onReply(result.reply, result.expression || 'Respondiendo');
+    this.onReply(result.reply, result.expression || 'Respondiendo', result);
     if (result.artifact) {
       this.onArtifact(result.artifact);
     }
+    this.lastTurnResult = result;
     this.speakFast(result.reply, result.postExpression || 'Disponible');
   }
 
@@ -179,7 +183,9 @@ export class IrisReflexEngine {
     if (!('speechSynthesis' in window)) {
       setTimeout(() => {
         this.setState(safeAfter);
-        this.onTurnFinished();
+        const turnRes = this.lastTurnResult;
+        this.lastTurnResult = null;
+        this.onTurnFinished(turnRes);
       }, 1200);
       return;
     }
@@ -195,13 +201,17 @@ export class IrisReflexEngine {
     utter.onend = () => {
       if (mySpeechId === this.currentSpeechId) {
         this.setState(safeAfter);
-        this.onTurnFinished();
+        const turnRes = this.lastTurnResult;
+        this.lastTurnResult = null;
+        this.onTurnFinished(turnRes);
       }
     };
     utter.onerror = () => {
       if (mySpeechId === this.currentSpeechId) {
         this.setState(safeAfter);
-        this.onTurnFinished();
+        const turnRes = this.lastTurnResult;
+        this.lastTurnResult = null;
+        this.onTurnFinished(turnRes);
       }
     };
 
